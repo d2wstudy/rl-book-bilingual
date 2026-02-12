@@ -63,5 +63,3 @@ A good way to understand reinforcement learning is to consider some of the examp
 :::
 
 ---
-
-<ChapterComments />

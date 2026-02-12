@@ -57,8 +57,12 @@ export async function findDiscussionWithComments(
           comments(first: 100) {
             nodes {
               id body createdAt author { login avatarUrl }
+              reactionGroups { content viewerHasReacted reactors { totalCount } }
               replies(first: 50) {
-                nodes { id body createdAt author { login avatarUrl } }
+                nodes {
+                  id body createdAt author { login avatarUrl }
+                  reactionGroups { content viewerHasReacted reactors { totalCount } }
+                }
               }
             }
           }
@@ -116,6 +120,24 @@ export async function addDiscussionComment(discussionId: string, body: string) {
       comment { id }
     }
   }`, { discussionId, body })
+}
+
+/** Add a reaction to a subject (comment or reply) */
+export async function addReaction(subjectId: string, content: string) {
+  return gql(`mutation($subjectId: ID!, $content: ReactionContent!) {
+    addReaction(input: { subjectId: $subjectId, content: $content }) {
+      reaction { content }
+    }
+  }`, { subjectId, content })
+}
+
+/** Remove a reaction from a subject */
+export async function removeReaction(subjectId: string, content: string) {
+  return gql(`mutation($subjectId: ID!, $content: ReactionContent!) {
+    removeReaction(input: { subjectId: $subjectId, content: $content }) {
+      reaction { content }
+    }
+  }`, { subjectId, content })
 }
 
 /** Add a reply to a discussion comment */

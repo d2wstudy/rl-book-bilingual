@@ -150,8 +150,12 @@ async function handleDiscussions(url, env, corsHeaders) {
           comments(first: 100) {
             nodes {
               id body createdAt author { login avatarUrl }
+              reactionGroups { content reactors { totalCount } }
               replies(first: 50) {
-                nodes { id body createdAt author { login avatarUrl } }
+                nodes {
+                  id body createdAt author { login avatarUrl }
+                  reactionGroups { content reactors { totalCount } }
+                }
               }
             }
           }

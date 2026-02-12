@@ -2,25 +2,38 @@
 import { ref, reactive, onMounted, watch, computed } from 'vue'
 import { useRoute } from 'vitepress'
 import { useAuth } from '../composables/useAuth'
-import { useComments } from '../composables/useComments'
+import { useComments, type ReactionGroup } from '../composables/useComments'
 import { useMarkdown } from '../composables/useMarkdown'
 import MarkdownEditor from './MarkdownEditor.vue'
 
 const { user, token, login } = useAuth()
-const { comments, loaded, loadComments, addComment, replyToComment } = useComments()
+const { comments, loaded, loadComments, addComment, replyToComment, toggleReaction } = useComments()
 const { renderMarkdown } = useMarkdown()
 const route = useRoute()
 
 const showEditor = ref(false)
 const submitting = ref(false)
 
-// Reply state: which comment thread is being replied to, and optional @mention target
 const replyingTo = ref<string | null>(null)
 const replyTarget = ref<{ author: string } | null>(null)
 const replySubmitting = ref(false)
 
-// Track which comment threads have replies expanded
 const expandedReplies = reactive<Record<string, boolean>>({})
+
+// Reaction emoji picker state
+const pickerOpenFor = ref<string | null>(null)
+
+const REACTION_EMOJI: Record<string, string> = {
+  THUMBS_UP: '\u{1F44D}',
+  THUMBS_DOWN: '\u{1F44E}',
+  LAUGH: '\u{1F604}',
+  HOORAY: '\u{1F389}',
+  HEART: '\u2764\uFE0F',
+  ROCKET: '\u{1F680}',
+  EYES: '\u{1F440}',
+}
+
+const PICKER_REACTIONS = ['THUMBS_UP', 'HEART', 'LAUGH', 'HOORAY', 'ROCKET', 'EYES']
 
 const totalCount = computed(() =>
   comments.value.reduce((sum, c) => sum + 1 + c.replies.length, 0)
@@ -35,7 +48,6 @@ function toggleReplies(commentId: string) {
 }
 
 function startReply(commentId: string, mentionAuthor?: string) {
-  // If clicking the same reply target, toggle off
   if (replyingTo.value === commentId && replyTarget.value?.author === mentionAuthor) {
     replyingTo.value = null
     replyTarget.value = null
@@ -43,7 +55,6 @@ function startReply(commentId: string, mentionAuthor?: string) {
   }
   replyingTo.value = commentId
   replyTarget.value = mentionAuthor ? { author: mentionAuthor } : null
-  // Auto-expand replies when starting to reply
   expandedReplies[commentId] = true
 }
 
@@ -60,16 +71,23 @@ async function onSubmit(text: string) {
 async function onReplySubmit(commentId: string, text: string) {
   replySubmitting.value = true
   try {
-    // Prepend @mention if replying to a specific reply author
     const body = replyTarget.value ? `@${replyTarget.value.author} ${text}` : text
     await replyToComment(route.path, commentId, body)
     replyingTo.value = null
     replyTarget.value = null
-    // Keep replies expanded after submitting
     expandedReplies[commentId] = true
   } finally {
     replySubmitting.value = false
   }
+}
+
+function togglePicker(subjectId: string) {
+  pickerOpenFor.value = pickerOpenFor.value === subjectId ? null : subjectId
+}
+
+async function onReact(subjectId: string, content: string) {
+  pickerOpenFor.value = null
+  await toggleReaction(subjectId, content)
 }
 
 function formatTime(iso: string) {
@@ -102,6 +120,34 @@ function formatTime(iso: string) {
               <span class="comment-time">{{ formatTime(c.createdAt) }}</span>
             </div>
             <div class="comment-body" v-html="renderMarkdown(c.body)" />
+
+            <!-- Reactions display -->
+            <div class="reactions-bar">
+              <button
+                v-for="r in c.reactions"
+                :key="r.content"
+                class="reaction-pill"
+                :class="{ 'reaction-active': r.viewerHasReacted }"
+                :disabled="!user"
+                @click="onReact(c.id, r.content)"
+              >
+                {{ REACTION_EMOJI[r.content] }} {{ r.count }}
+              </button>
+              <div v-if="user" class="reaction-add-wrap">
+                <button class="reaction-add-btn" @click="togglePicker(c.id)">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+                </button>
+                <div v-if="pickerOpenFor === c.id" class="reaction-picker">
+                  <button
+                    v-for="key in PICKER_REACTIONS"
+                    :key="key"
+                    class="picker-emoji"
+                    @click="onReact(c.id, key)"
+                  >{{ REACTION_EMOJI[key] }}</button>
+                </div>
+              </div>
+            </div>
+
             <div class="comment-actions">
               <button v-if="user" class="action-btn" @click="startReply(c.id)">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
@@ -136,6 +182,34 @@ function formatTime(iso: string) {
                 <span class="comment-time">{{ formatTime(r.createdAt) }}</span>
               </div>
               <div class="comment-body" v-html="renderMarkdown(r.body)" />
+
+              <!-- Reply reactions -->
+              <div class="reactions-bar">
+                <button
+                  v-for="rg in r.reactions"
+                  :key="rg.content"
+                  class="reaction-pill"
+                  :class="{ 'reaction-active': rg.viewerHasReacted }"
+                  :disabled="!user"
+                  @click="onReact(r.id, rg.content)"
+                >
+                  {{ REACTION_EMOJI[rg.content] }} {{ rg.count }}
+                </button>
+                <div v-if="user" class="reaction-add-wrap">
+                  <button class="reaction-add-btn" @click="togglePicker(r.id)">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
+                  </button>
+                  <div v-if="pickerOpenFor === r.id" class="reaction-picker">
+                    <button
+                      v-for="key in PICKER_REACTIONS"
+                      :key="key"
+                      class="picker-emoji"
+                      @click="onReact(r.id, key)"
+                    >{{ REACTION_EMOJI[key] }}</button>
+                  </div>
+                </div>
+              </div>
+
               <div class="comment-actions">
                 <button v-if="user" class="action-btn" @click="startReply(c.id, r.author)">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
@@ -269,11 +343,103 @@ function formatTime(iso: string) {
 .comment-body :deep(blockquote) { border-left: 3px solid var(--vp-c-divider); padding-left: 8px; color: var(--vp-c-text-2); margin: 4px 0; }
 .comment-body :deep(a) { color: var(--vp-c-brand-1); }
 
+/* Reactions */
+.reactions-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.reaction-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg);
+  color: var(--vp-c-text-2);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+  line-height: 1.4;
+}
+.reaction-pill:hover:not(:disabled) {
+  border-color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg-soft);
+}
+.reaction-pill:disabled {
+  cursor: default;
+}
+.reaction-active {
+  border-color: var(--vp-c-brand-1);
+  background: color-mix(in srgb, var(--vp-c-brand-1) 10%, transparent);
+  color: var(--vp-c-brand-1);
+}
+
+.reaction-add-wrap {
+  position: relative;
+}
+
+.reaction-add-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 24px;
+  border: 1px dashed var(--vp-c-divider);
+  border-radius: 12px;
+  background: none;
+  color: var(--vp-c-text-3);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.reaction-add-btn:hover {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg-soft);
+}
+
+.reaction-picker {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--vp-c-bg-elv);
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+  z-index: 10;
+  white-space: nowrap;
+}
+
+.picker-emoji {
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.1s;
+}
+.picker-emoji:hover {
+  background: var(--vp-c-bg-soft);
+}
+
 .comment-actions {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-top: 6px;
+  margin-top: 4px;
 }
 
 .action-btn {
@@ -306,7 +472,7 @@ function formatTime(iso: string) {
   transform: rotate(180deg);
 }
 
-/* Replies section — flat, no nesting */
+/* Replies section */
 .replies-section {
   margin-left: 48px;
   border-left: 2px solid var(--vp-c-divider);

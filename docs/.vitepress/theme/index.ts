@@ -36,7 +36,7 @@ export default {
   Layout() {
     return h(DefaultTheme.Layout, null, {
       'nav-bar-content-after': () => [h(LanguageToggle), h(LoginButton)],
-      'doc-after': () => h(AnnotationLayer),
+      'doc-after': () => [h(AnnotationLayer), h(ChapterComments)],
     })
   },
 
