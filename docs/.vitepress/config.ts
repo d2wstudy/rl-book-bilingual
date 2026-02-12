@@ -65,7 +65,7 @@ export default defineConfig({
       },
     ],
     socialLinks: [
-      { icon: 'github', link: 'https://github.com/' },
+      { icon: 'github', link: 'https://github.com/d2wstudy/rl-book-bilingual' },
     ],
     outline: { level: [2, 3], label: '本页目录' },
     search: { provider: 'local' },

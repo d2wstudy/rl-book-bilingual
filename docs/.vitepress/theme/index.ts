@@ -103,7 +103,7 @@ function pairBilingualBlocks() {
     const btn = document.createElement('button')
     btn.className = 'flip-btn'
     btn.title = '切换中/英文'
-    btn.textContent = '译'
+    btn.textContent = '中'
     btn.addEventListener('click', () => {
       pair.classList.add('flipped-manual')
       const enEl = pair.querySelector('.bilingual-en') as HTMLElement
@@ -112,7 +112,7 @@ function pairBilingualBlocks() {
       const enVisible = enEl.style.display !== 'none'
       enEl.style.display = enVisible ? 'none' : ''
       zhEl.style.display = enVisible ? '' : 'none'
-      btn.textContent = enVisible ? '译' : '原'
+      btn.textContent = enVisible ? '英' : '中'
     })
 
     en.parentNode!.insertBefore(pair, en)

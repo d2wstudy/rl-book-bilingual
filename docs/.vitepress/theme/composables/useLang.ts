@@ -40,5 +40,7 @@ export function applyDefaultLang() {
       en.style.display = ''
       zh.style.display = 'none'
     }
+    const btn = pair.querySelector('.flip-btn')
+    if (btn) btn.textContent = lang === 'zh' ? '英' : '中'
   })
 }

@@ -70,7 +70,6 @@ Uses separate client ID/secret pairs for dev vs production (env vars with `_DEV`
 - Built-in VitePress math rendering (`markdown.math: true`)
 - markdown-it-container for bilingual blocks
 - marked + DOMPurify for client-side Markdown rendering in annotations
-- Giscus for chapter-level comments
 - Cloudflare Workers for serverless OAuth/Discussions proxy
 
 ## Conventions

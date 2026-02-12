@@ -10,7 +10,7 @@ hero:
       link: /chapters/ch01-introduction
     - theme: alt
       text: GitHub
-      link: https://github.com/
+      link: https://github.com/d2wstudy/rl-book-bilingual
 
 features:
   - title: 📖 段落级双语对照
@@ -18,5 +18,5 @@ features:
   - title: 📝 读者笔记
     details: 选中段落文本即可添加 Markdown 笔记，记录你的理解与思考
   - title: 💬 读者讨论
-    details: 基于 Giscus 的评论系统，每章可独立讨论
+    details: 基于 GitHub Discussions 的评论系统，每章可独立讨论
 ---
