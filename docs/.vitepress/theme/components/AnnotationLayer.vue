@@ -4,6 +4,7 @@ import { useRoute } from 'vitepress'
 import { useAuth } from '../composables/useAuth'
 import { useAnnotations, type Annotation } from '../composables/useAnnotations'
 import { useMarkdown } from '../composables/useMarkdown'
+import { captureSelector, resolveSelector, type ResolvedRange } from '../composables/useTextAnchor'
 import NoteBubble from './NoteBubble.vue'
 import NoteEditor from './NoteEditor.vue'
 
@@ -26,6 +27,8 @@ const selectedInfo = ref<{
   startOffset: number
   endOffset: number
   text: string
+  prefix: string
+  suffix: string
 } | null>(null)
 
 // Prevent click event from immediately closing the bubble after mouseup
@@ -86,11 +89,16 @@ function onMouseUp(e: MouseEvent) {
   const startOffset = getTextOffset(langBlock, range.startContainer, range.startOffset)
   const endOffset = getTextOffset(langBlock, range.endContainer, range.endOffset)
 
+  // Capture TextQuoteSelector context (prefix/suffix) for robust re-anchoring
+  const selector = captureSelector(langBlock, startOffset, endOffset)
+
   selectedInfo.value = {
     paragraphId,
     startOffset,
     endOffset,
     text: selectedText,
+    prefix: selector.prefix,
+    suffix: selector.suffix,
   }
 
   const rect = range.getBoundingClientRect()
@@ -129,6 +137,8 @@ async function submitNote(note: string) {
     selectedInfo.value.endOffset,
     selectedInfo.value.text,
     note,
+    selectedInfo.value.prefix,
+    selectedInfo.value.suffix,
   )
 
   showEditor.value = false
@@ -162,30 +172,51 @@ function renderAnnotations() {
 
   document.querySelectorAll('.bilingual-pair[data-pair-id]').forEach((pair) => {
     const id = pair.getAttribute('data-pair-id')!
-    const annos = map.get(id)
-    if (!annos || !annos.length) return
+    const legacyId = pair.getAttribute('data-pair-id-legacy')
+
+    // Collect annotations matching either the new hash-based ID or the legacy counter-based ID
+    const annos = [
+      ...(map.get(id) || []),
+      ...(legacyId && legacyId !== id ? (map.get(legacyId) || []) : []),
+    ]
+    if (!annos.length) return
 
     const zhBlock = pair.querySelector('.bilingual-zh')
     if (!zhBlock) return
 
-    const sorted = [...annos].sort((a, b) => b.startOffset - a.startOffset)
+    // Resolve each annotation to current offsets via TextQuoteSelector matching
+    const resolved: { anno: Annotation; range: ResolvedRange }[] = []
+    for (const anno of annos) {
+      const selector = {
+        exact: anno.selectedText,
+        prefix: anno.prefix || '',
+        suffix: anno.suffix || '',
+      }
+      const range = resolveSelector(zhBlock, selector, anno.startOffset, anno.endOffset)
+      if (range) {
+        resolved.push({ anno, range })
+      }
+    }
 
-    for (const anno of sorted) {
-      highlightRange(zhBlock, anno)
+    // Sort by descending startOffset so DOM mutations don't shift later offsets
+    resolved.sort((a, b) => b.range.startOffset - a.range.startOffset)
+
+    for (const { anno, range } of resolved) {
+      highlightRange(zhBlock, anno, range)
     }
   })
 }
 
-function highlightRange(container: Element, anno: Annotation) {
+function highlightRange(container: Element, anno: Annotation, range: ResolvedRange) {
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
   let offset = 0
   let node: Text | null
 
   while ((node = walker.nextNode() as Text | null)) {
     const nodeEnd = offset + node.length
-    if (offset <= anno.startOffset && nodeEnd >= anno.endOffset) {
-      const relStart = anno.startOffset - offset
-      const relEnd = anno.endOffset - offset
+    if (offset <= range.startOffset && nodeEnd >= range.endOffset) {
+      const relStart = range.startOffset - offset
+      const relEnd = range.endOffset - offset
 
       const before = node.textContent!.slice(0, relStart)
       const middle = node.textContent!.slice(relStart, relEnd)

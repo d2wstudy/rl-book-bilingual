@@ -10,6 +10,10 @@ export interface Annotation {
   startOffset: number
   endOffset: number
   selectedText: string
+  /** Up to 32 chars before the selection (TextQuoteSelector context) */
+  prefix: string
+  /** Up to 32 chars after the selection (TextQuoteSelector context) */
+  suffix: string
   note: string
   author: string
   authorAvatar: string
@@ -37,6 +41,8 @@ export function useAnnotations() {
               startOffset: data.startOffset,
               endOffset: data.endOffset,
               selectedText: data.selectedText,
+              prefix: data.prefix ?? '',
+              suffix: data.suffix ?? '',
               note: data.note,
               author: c.author.login,
               authorAvatar: c.author.avatarUrl,
@@ -63,6 +69,8 @@ export function useAnnotations() {
     endOffset: number,
     selectedText: string,
     note: string,
+    prefix: string = '',
+    suffix: string = '',
   ) {
     if (!token.value) return
 
@@ -79,6 +87,8 @@ export function useAnnotations() {
       startOffset,
       endOffset,
       selectedText,
+      prefix,
+      suffix,
       note,
     })
 

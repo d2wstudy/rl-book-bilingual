@@ -11,7 +11,16 @@ import AnnotationLayer from './components/AnnotationLayer.vue'
 import ChapterComments from './components/ChapterComments.vue'
 import './style.css'
 
-let pairCounter = 0
+let legacyCounter = 0
+
+/** djb2 hash → short base-36 string, used for content-stable paragraph IDs */
+function hashText(str: string): string {
+  let h = 5381
+  for (let i = 0; i < str.length; i++) {
+    h = ((h << 5) + h + str.charCodeAt(i)) & 0xffffffff
+  }
+  return (h >>> 0).toString(36)
+}
 
 export default {
   extends: DefaultTheme,
@@ -44,7 +53,7 @@ export default {
     })
 
     watch(() => route.path, () => {
-      pairCounter = 0
+      legacyCounter = 0
       setTimeout(() => {
         pairBilingualBlocks()
         applyDefaultLang()
@@ -78,14 +87,18 @@ function pairBilingualBlocks() {
     const zh = blocks[i + 1]
     if (!en.classList.contains('bilingual-en') || !zh.classList.contains('bilingual-zh')) continue
 
-    // Find nearest heading for a stable paragraph ID
+    // Build a content-stable paragraph ID: heading slug + hash of English text
     const heading = findPrecedingHeading(en)
     const headingSlug = heading ? heading.id || heading.textContent?.trim().slice(0, 20) : 'top'
-    const pairId = `${headingSlug}-p${pairCounter++}`
+    const enText = (en.textContent || '').trim().slice(0, 80)
+    const pairId = `${headingSlug}-${hashText(enText)}`
+    // Legacy counter-based ID for backward compatibility with old annotations
+    const legacyId = `${headingSlug}-p${legacyCounter++}`
 
     const pair = document.createElement('div')
     pair.className = 'bilingual-pair'
     pair.setAttribute('data-pair-id', pairId)
+    pair.setAttribute('data-pair-id-legacy', legacyId)
 
     const btn = document.createElement('button')
     btn.className = 'flip-btn'
