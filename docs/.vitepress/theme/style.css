@@ -1,0 +1,95 @@
+/* ===== Bilingual pair ===== */
+
+.bilingual-pair {
+  position: relative;
+  margin: 16px 0;
+  padding-right: 36px;
+  line-height: 1.8;
+}
+
+.bilingual-en,
+.bilingual-zh {
+  margin: 0;
+  padding: 0;
+}
+
+.bilingual-en {
+  color: var(--vp-c-text-2);
+}
+
+.bilingual-zh {
+  color: var(--vp-c-text-1);
+}
+
+/* ===== Flip button ===== */
+
+.flip-btn {
+  position: absolute;
+  top: 2px;
+  right: 0;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 6px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  opacity: 0;
+}
+
+.bilingual-pair:hover .flip-btn {
+  opacity: 1;
+}
+
+.flip-btn:hover {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
+  background: var(--vp-c-brand-soft);
+}
+
+/* ===== Reader notes ===== */
+
+.reader-anno {
+  text-decoration: underline wavy;
+  text-decoration-color: var(--vp-c-warning-1);
+  text-underline-offset: 3px;
+  cursor: pointer;
+  border-radius: 2px;
+  transition: background 0.15s;
+}
+
+.reader-anno:hover {
+  background: rgba(234, 179, 8, 0.15);
+}
+
+/* ===== Nav bar extras ===== */
+
+.VPNavBarExtra,
+.VPNavBar .content-body {
+  gap: 8px;
+}
+
+/* ===== Giscus ===== */
+
+.giscus-wrapper {
+  margin-top: 48px;
+  padding-top: 24px;
+  border-top: 1px solid var(--vp-c-divider);
+}
+
+/* ===== Responsive ===== */
+
+@media (max-width: 768px) {
+  .flip-btn {
+    opacity: 0.6;
+  }
+
+  .bilingual-pair {
+    padding-right: 32px;
+  }
+}

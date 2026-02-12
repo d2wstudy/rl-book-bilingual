@@ -1,0 +1,18 @@
+_archive/
+node_modules/
+
+# VitePress
+docs/.vitepress/cache
+docs/.vitepress/dist
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# IDE
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
