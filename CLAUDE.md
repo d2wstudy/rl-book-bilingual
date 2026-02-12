@@ -16,15 +16,25 @@ Worker (in `worker/` directory):
 - `npx wrangler dev` — Run Cloudflare Worker locally
 - `npx wrangler deploy` — Deploy Worker to Cloudflare
 
+No test runner or linter is configured in this project.
+
 ## Architecture
 
 ### Bilingual System
 
-Markdown files in `docs/chapters/` use custom containers `::: en` and `::: zh` to mark English/Chinese paragraphs. The rendering pipeline:
+Markdown files in `docs/chapters/` use custom containers `::: en` and `::: zh` to mark English/Chinese paragraphs. A third container `::: notes` renders author notes (`<div class="author-notes">`). The rendering pipeline:
 
-1. `docs/.vitepress/config.ts` registers custom markdown-it-container renderers that output `<div class="bilingual-en">` / `<div class="bilingual-zh">`
-2. `docs/.vitepress/theme/index.ts` — `pairBilingualBlocks()` runs at runtime, finds adjacent en/zh divs, wraps them in `.bilingual-pair`, generates stable IDs (based on preceding heading), and injects a toggle button per pair
-3. `docs/.vitepress/theme/composables/useLang.ts` — manages global default language (localStorage), `applyDefaultLang()` shows/hides blocks while respecting per-paragraph manual overrides
+1. `docs/.vitepress/config.ts` registers markdown-it-container renderers for `en`, `zh`, and `notes` that output `<div class="bilingual-en">` / `<div class="bilingual-zh">` / `<div class="author-notes">`
+2. `docs/.vitepress/theme/index.ts` — `pairBilingualBlocks()` runs at runtime on mount and route change, finds adjacent `.bilingual-en` + `.bilingual-zh` divs, wraps them in `.bilingual-pair`, generates stable IDs (`{headingSlug}-p{counter}`), and injects a per-pair toggle button. It is idempotent (skips if `.bilingual-pair` already exists) and resets its counter on route change.
+3. `docs/.vitepress/theme/composables/useLang.ts` — manages global default language (localStorage), `applyDefaultLang()` shows/hides blocks while respecting per-paragraph manual overrides (`.flipped-manual` class)
+
+### Theme Layout
+
+`docs/.vitepress/theme/index.ts` extends VitePress DefaultTheme and uses layout slots:
+- `nav-bar-content-after` → renders `LanguageToggle` + `LoginButton` in the navbar
+- `doc-after` → renders `AnnotationLayer` below document content
+
+Five global components are registered: `LanguageToggle`, `LoginButton`, `Anno`, `AnnotationLayer`, `ChapterComments`.
 
 ### Authentication Flow
 
@@ -40,26 +50,28 @@ Environment-specific OAuth apps configured in `docs/.env.development` and `docs/
 
 ### Annotation System
 
-- Storage: GitHub Discussions (one discussion per page)
+- Storage: GitHub Discussions (one discussion per page, repo: `d2wstudy/rl-book-bilingual`)
 - `AnnotationLayer.vue` captures text selection, shows annotation popup
-- `useAnnotations.ts` manages CRUD via GitHub GraphQL API
+- `useAnnotations.ts` manages CRUD via GitHub GraphQL API through `useGithubGql.ts`
 - Notes serialized as JSON in discussion comments with `paragraphId`, offsets, and note text
 
 ### Cloudflare Worker (`worker/index.js`)
 
-OAuth proxy with two routes:
+OAuth proxy and Discussions read proxy with three routes:
+- `GET /api/discussions?path=xxx&category=Notes` — read discussions (cached 5 min via Cloudflare Cache API, uses `GITHUB_PAT`)
 - `POST /api/auth` — exchange OAuth code for token
 - `POST /api/revoke` — revoke OAuth authorization
 
-Uses separate client ID/secret pairs for dev vs production (env vars with `_DEV` suffix).
+Uses separate client ID/secret pairs for dev vs production (env vars with `_DEV` suffix). Worker secrets are set via `wrangler secret`.
 
 ## Key Tech
 
 - Vue 3 + VitePress 1.6.x
-- markdown-it-mathjax3 for math rendering
+- Built-in VitePress math rendering (`markdown.math: true`)
 - markdown-it-container for bilingual blocks
+- marked + DOMPurify for client-side Markdown rendering in annotations
 - Giscus for chapter-level comments
-- Cloudflare Workers for serverless OAuth proxy
+- Cloudflare Workers for serverless OAuth/Discussions proxy
 
 ## Conventions
 
