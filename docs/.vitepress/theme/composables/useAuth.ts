@@ -13,6 +13,7 @@ interface GitHubUser {
 const token = ref<string | null>(null)
 const user = ref<GitHubUser | null>(null)
 const loading = ref(false)
+let revokePromise: Promise<void> | null = null
 
 export function useAuth() {
   function init() {
@@ -35,7 +36,12 @@ export function useAuth() {
     }
   }
 
-  function login() {
+  async function login() {
+    // Wait for any pending revoke to complete before starting new OAuth flow,
+    // otherwise GitHub may auto-approve with the previous account's grant
+    if (revokePromise) {
+      await revokePromise
+    }
     // Remember current page so we can return after OAuth
     sessionStorage.setItem('gh-redirect', window.location.href)
     // Always use site root as redirect_uri to match OAuth App config
@@ -50,13 +56,16 @@ export function useAuth() {
     token.value = null
     user.value = null
     sessionStorage.removeItem('gh-token')
-    // Revoke GitHub OAuth grant so user can switch accounts
+    // Revoke GitHub OAuth grant so next login shows the authorization page,
+    // allowing the user to switch accounts
     if (savedToken) {
-      fetch(`${WORKER_URL}/api/revoke`, {
+      revokePromise = fetch(`${WORKER_URL}/api/revoke`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ access_token: savedToken, client_id: GITHUB_CLIENT_ID }),
-      }).catch(() => {})
+      })
+        .then(() => { revokePromise = null })
+        .catch(() => { revokePromise = null })
     }
   }
 

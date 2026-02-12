@@ -81,17 +81,25 @@ export default {
         secret = env.GITHUB_CLIENT_SECRET_DEV
       }
 
-      await fetch(`https://api.github.com/applications/${id}/grant`, {
+      const revokeResp = await fetch(`https://api.github.com/applications/${id}/grant`, {
         method: 'DELETE',
         headers: {
           Authorization: 'Basic ' + btoa(`${id}:${secret}`),
           Accept: 'application/json',
           'Content-Type': 'application/json',
+          'User-Agent': 'rl-book-worker',
         },
         body: JSON.stringify({ access_token }),
       })
 
-      return Response.json({ ok: true }, { headers: corsHeaders })
+      // 204 = success, 422 = already revoked — both are fine
+      if (revokeResp.status === 204 || revokeResp.status === 422) {
+        return Response.json({ ok: true }, { headers: corsHeaders })
+      }
+      return Response.json(
+        { ok: false, status: revokeResp.status },
+        { status: revokeResp.status, headers: corsHeaders },
+      )
     }
 
     return new Response('Not found', { status: 404, headers: corsHeaders })
