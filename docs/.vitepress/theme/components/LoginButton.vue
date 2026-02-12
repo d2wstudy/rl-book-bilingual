@@ -36,12 +36,6 @@ function onMenuLeave() {
   showMenu.value = false
 }
 
-function handleClick() {
-  if (!user.value) {
-    login()
-  }
-}
-
 function handleLogout() {
   showMenu.value = false
   logout()
@@ -66,22 +60,18 @@ onUnmounted(() => {
   <div class="login-btn-wrapper">
     <span v-if="loading" class="avatar-placeholder" />
     <button
+      v-else-if="!user"
+      class="sign-in-btn"
+      @click="login"
+    >登录</button>
+    <button
       v-else
       ref="btnRef"
       class="avatar-btn"
-      @click="handleClick"
       @mouseenter="onEnter"
       @mouseleave="onLeave"
     >
-      <img v-if="user" :src="user.avatar_url" :alt="user.login" class="user-avatar" />
-      <svg v-else width="32" height="32" viewBox="0 0 20 20" class="default-avatar">
-        <circle cx="10" cy="10" r="10" fill="#D1D5DB"/>
-        <clipPath id="avatar-clip"><circle cx="10" cy="10" r="10"/></clipPath>
-        <g clip-path="url(#avatar-clip)">
-          <circle cx="10" cy="8" r="3.2" fill="#9CA3AF"/>
-          <ellipse cx="10" cy="19" rx="7" ry="5.5" fill="#9CA3AF"/>
-        </g>
-      </svg>
+      <img :src="user.avatar_url" :alt="user.login" class="user-avatar" />
     </button>
 
     <Teleport to="body">
@@ -131,9 +121,21 @@ onUnmounted(() => {
   border-radius: 50%;
 }
 
-.default-avatar {
-  border-radius: 50%;
-  display: block;
+.sign-in-btn {
+  border: 1px solid var(--vp-c-divider);
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-1);
+  font-size: 13px;
+  padding: 2px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.2s;
+  white-space: nowrap;
+}
+
+.sign-in-btn:hover {
+  border-color: var(--vp-c-brand-1);
+  color: var(--vp-c-brand-1);
 }
 
 .avatar-placeholder {
