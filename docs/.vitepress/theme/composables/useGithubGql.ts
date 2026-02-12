@@ -55,7 +55,12 @@ export async function findDiscussionWithComments(
           id
           title
           comments(first: 100) {
-            nodes { id body createdAt author { login avatarUrl } }
+            nodes {
+              id body createdAt author { login avatarUrl }
+              replies(first: 50) {
+                nodes { id body createdAt author { login avatarUrl } }
+              }
+            }
           }
         }
       }
@@ -111,6 +116,15 @@ export async function addDiscussionComment(discussionId: string, body: string) {
       comment { id }
     }
   }`, { discussionId, body })
+}
+
+/** Add a reply to a discussion comment */
+export async function addDiscussionReply(discussionId: string, replyToId: string, body: string) {
+  return gql(`mutation($discussionId: ID!, $replyToId: ID!, $body: String!) {
+    addDiscussionComment(input: { discussionId: $discussionId, replyToId: $replyToId, body: $body }) {
+      comment { id }
+    }
+  }`, { discussionId, replyToId, body })
 }
 
 /** Shared GraphQL helper (requires auth) */

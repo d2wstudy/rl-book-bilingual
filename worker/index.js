@@ -148,7 +148,12 @@ async function handleDiscussions(url, env, corsHeaders) {
           id
           title
           comments(first: 100) {
-            nodes { id body createdAt author { login avatarUrl } }
+            nodes {
+              id body createdAt author { login avatarUrl }
+              replies(first: 50) {
+                nodes { id body createdAt author { login avatarUrl } }
+              }
+            }
           }
         }
       }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, reactive, onMounted, watch, computed } from 'vue'
 import { useRoute } from 'vitepress'
 import { useAuth } from '../composables/useAuth'
 import { useComments } from '../composables/useComments'
@@ -7,16 +7,45 @@ import { useMarkdown } from '../composables/useMarkdown'
 import MarkdownEditor from './MarkdownEditor.vue'
 
 const { user, token, login } = useAuth()
-const { comments, loaded, loadComments, addComment } = useComments()
+const { comments, loaded, loadComments, addComment, replyToComment } = useComments()
 const { renderMarkdown } = useMarkdown()
 const route = useRoute()
 
 const showEditor = ref(false)
 const submitting = ref(false)
 
+// Reply state: which comment thread is being replied to, and optional @mention target
+const replyingTo = ref<string | null>(null)
+const replyTarget = ref<{ author: string } | null>(null)
+const replySubmitting = ref(false)
+
+// Track which comment threads have replies expanded
+const expandedReplies = reactive<Record<string, boolean>>({})
+
+const totalCount = computed(() =>
+  comments.value.reduce((sum, c) => sum + 1 + c.replies.length, 0)
+)
+
 onMounted(() => loadComments(route.path))
 watch(() => route.path, (path) => loadComments(path))
 watch(token, () => loadComments(route.path))
+
+function toggleReplies(commentId: string) {
+  expandedReplies[commentId] = !expandedReplies[commentId]
+}
+
+function startReply(commentId: string, mentionAuthor?: string) {
+  // If clicking the same reply target, toggle off
+  if (replyingTo.value === commentId && replyTarget.value?.author === mentionAuthor) {
+    replyingTo.value = null
+    replyTarget.value = null
+    return
+  }
+  replyingTo.value = commentId
+  replyTarget.value = mentionAuthor ? { author: mentionAuthor } : null
+  // Auto-expand replies when starting to reply
+  expandedReplies[commentId] = true
+}
 
 async function onSubmit(text: string) {
   submitting.value = true
@@ -25,6 +54,21 @@ async function onSubmit(text: string) {
     showEditor.value = false
   } finally {
     submitting.value = false
+  }
+}
+
+async function onReplySubmit(commentId: string, text: string) {
+  replySubmitting.value = true
+  try {
+    // Prepend @mention if replying to a specific reply author
+    const body = replyTarget.value ? `@${replyTarget.value.author} ${text}` : text
+    await replyToComment(route.path, commentId, body)
+    replyingTo.value = null
+    replyTarget.value = null
+    // Keep replies expanded after submitting
+    expandedReplies[commentId] = true
+  } finally {
+    replySubmitting.value = false
   }
 }
 
@@ -43,19 +87,77 @@ function formatTime(iso: string) {
 <template>
   <div class="chapter-comments">
     <div class="comments-header">
-      <h3 class="comments-title">讨论 ({{ comments.length }})</h3>
+      <h3 class="comments-title">讨论 ({{ totalCount }})</h3>
     </div>
 
     <!-- Comment list -->
     <div v-if="loaded && comments.length" class="comments-list">
-      <div v-for="c in comments" :key="c.id" class="comment-item">
-        <img :src="c.authorAvatar" class="comment-avatar" :alt="c.author" />
-        <div class="comment-content">
-          <div class="comment-meta">
-            <span class="comment-author">{{ c.author }}</span>
-            <span class="comment-time">{{ formatTime(c.createdAt) }}</span>
+      <div v-for="c in comments" :key="c.id" class="comment-thread">
+        <!-- Top-level comment -->
+        <div class="comment-item">
+          <img :src="c.authorAvatar" class="comment-avatar" :alt="c.author" />
+          <div class="comment-content">
+            <div class="comment-meta">
+              <span class="comment-author">{{ c.author }}</span>
+              <span class="comment-time">{{ formatTime(c.createdAt) }}</span>
+            </div>
+            <div class="comment-body" v-html="renderMarkdown(c.body)" />
+            <div class="comment-actions">
+              <button v-if="user" class="action-btn" @click="startReply(c.id)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+                回复
+              </button>
+              <button
+                v-if="c.replies.length"
+                class="action-btn expand-btn"
+                @click="toggleReplies(c.id)"
+              >
+                <svg
+                  width="12" height="12" viewBox="0 0 24 24" fill="none"
+                  stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                  :class="{ 'chevron-open': expandedReplies[c.id] }"
+                  class="chevron-icon"
+                >
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+                {{ c.replies.length }} 条回复
+              </button>
+            </div>
           </div>
-          <div class="comment-body" v-html="renderMarkdown(c.body)" />
+        </div>
+
+        <!-- Replies (flat, collapsible) -->
+        <div v-if="c.replies.length && expandedReplies[c.id]" class="replies-section">
+          <div v-for="r in c.replies" :key="r.id" class="reply-item">
+            <img :src="r.authorAvatar" class="reply-avatar" :alt="r.author" />
+            <div class="reply-content">
+              <div class="comment-meta">
+                <span class="comment-author">{{ r.author }}</span>
+                <span class="comment-time">{{ formatTime(r.createdAt) }}</span>
+              </div>
+              <div class="comment-body" v-html="renderMarkdown(r.body)" />
+              <div class="comment-actions">
+                <button v-if="user" class="action-btn" @click="startReply(c.id, r.author)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 0 0-4-4H4"/></svg>
+                  回复
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Reply editor -->
+        <div v-if="replyingTo === c.id" class="reply-editor-section">
+          <div v-if="replyTarget" class="reply-indicator">
+            回复 <span class="reply-indicator-author">@{{ replyTarget.author }}</span>
+            <button class="reply-indicator-clear" @click="replyTarget = null" title="改为回复主楼">&times;</button>
+          </div>
+          <MarkdownEditor
+            :placeholder="replyTarget ? `回复 @${replyTarget.author}...` : '写下你的回复... 支持 Markdown 语法'"
+            :submit-label="replySubmitting ? '提交中...' : '回复'"
+            @submit="(text: string) => onReplySubmit(c.id, text)"
+            @cancel="replyingTo = null; replyTarget = null"
+          />
         </div>
       </div>
     </div>
@@ -107,13 +209,22 @@ function formatTime(iso: string) {
 .comments-list {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 4px;
   margin-bottom: 20px;
+}
+
+.comment-thread {
+  border-bottom: 1px solid var(--vp-c-divider);
+  padding-bottom: 12px;
+}
+.comment-thread:last-child {
+  border-bottom: none;
 }
 
 .comment-item {
   display: flex;
   gap: 12px;
+  padding: 12px 0 4px;
 }
 
 .comment-avatar {
@@ -157,6 +268,105 @@ function formatTime(iso: string) {
 .comment-body :deep(pre code) { background: none; padding: 0; }
 .comment-body :deep(blockquote) { border-left: 3px solid var(--vp-c-divider); padding-left: 8px; color: var(--vp-c-text-2); margin: 4px 0; }
 .comment-body :deep(a) { color: var(--vp-c-brand-1); }
+
+.comment-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--vp-c-text-3);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.action-btn:hover {
+  color: var(--vp-c-brand-1);
+  background: var(--vp-c-bg-soft);
+}
+
+.expand-btn {
+  color: var(--vp-c-brand-1);
+  font-weight: 500;
+}
+
+.chevron-icon {
+  transition: transform 0.2s;
+}
+.chevron-open {
+  transform: rotate(180deg);
+}
+
+/* Replies section — flat, no nesting */
+.replies-section {
+  margin-left: 48px;
+  border-left: 2px solid var(--vp-c-divider);
+}
+
+.reply-item {
+  display: flex;
+  gap: 10px;
+  padding: 10px 0 4px 14px;
+}
+
+.reply-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.reply-content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Reply editor */
+.reply-editor-section {
+  margin-left: 48px;
+  margin-top: 8px;
+}
+
+.reply-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--vp-c-text-3);
+  margin-bottom: 6px;
+  padding: 4px 8px;
+  background: var(--vp-c-bg-soft);
+  border-radius: 4px;
+  width: fit-content;
+}
+
+.reply-indicator-author {
+  color: var(--vp-c-brand-1);
+  font-weight: 500;
+}
+
+.reply-indicator-clear {
+  border: none;
+  background: none;
+  color: var(--vp-c-text-3);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0 2px;
+  margin-left: 4px;
+}
+.reply-indicator-clear:hover {
+  color: var(--vp-c-text-1);
+}
 
 .comments-empty {
   text-align: center;
