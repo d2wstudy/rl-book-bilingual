@@ -339,9 +339,71 @@ function formatTime(iso: string) {
 .comment-body :deep(p) { margin: 4px 0; }
 .comment-body :deep(code) { background: var(--vp-c-bg-soft); padding: 2px 4px; border-radius: 3px; font-size: 13px; }
 .comment-body :deep(pre) { background: var(--vp-c-bg-soft); padding: 8px; border-radius: 6px; overflow-x: auto; margin: 6px 0; }
-.comment-body :deep(pre code) { background: none; padding: 0; }
+.comment-body :deep(pre code) { background: none; padding: 0; font-size: 13px; }
 .comment-body :deep(blockquote) { border-left: 3px solid var(--vp-c-divider); padding-left: 8px; color: var(--vp-c-text-2); margin: 4px 0; }
-.comment-body :deep(a) { color: var(--vp-c-brand-1); }
+.comment-body :deep(a) { color: var(--vp-c-brand-1); text-decoration: none; }
+.comment-body :deep(a:hover) { text-decoration: underline; }
+.comment-body :deep(h1),
+.comment-body :deep(h2),
+.comment-body :deep(h3),
+.comment-body :deep(h4) {
+  margin: 8px 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+  border: none;
+  padding: 0;
+  line-height: 1.5;
+}
+.comment-body :deep(h1) { font-size: 17px; }
+.comment-body :deep(h2) { font-size: 16px; }
+.comment-body :deep(h3) { font-size: 15px; }
+.comment-body :deep(ul),
+.comment-body :deep(ol) {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+.comment-body :deep(li) {
+  margin: 2px 0;
+}
+.comment-body :deep(li + li) {
+  margin-top: 2px;
+}
+.comment-body :deep(hr) {
+  margin: 8px 0;
+  border: none;
+  border-top: 1px solid var(--vp-c-divider);
+}
+.comment-body :deep(img) {
+  max-width: 100%;
+  border-radius: 6px;
+  margin: 4px 0;
+}
+.comment-body :deep(table) {
+  border-collapse: collapse;
+  margin: 6px 0;
+  font-size: 13px;
+  width: auto;
+}
+.comment-body :deep(th),
+.comment-body :deep(td) {
+  border: 1px solid var(--vp-c-divider);
+  padding: 4px 8px;
+}
+.comment-body :deep(th) {
+  background: var(--vp-c-bg-soft);
+  font-weight: 600;
+}
+.comment-body :deep(del) {
+  color: var(--vp-c-text-3);
+}
+/* @mention highlight */
+.comment-body :deep(.mention) {
+  color: var(--vp-c-brand-1);
+  font-weight: 500;
+  background: color-mix(in srgb, var(--vp-c-brand-1) 8%, transparent);
+  padding: 1px 4px;
+  border-radius: 3px;
+}
 
 /* Reactions */
 .reactions-bar {
