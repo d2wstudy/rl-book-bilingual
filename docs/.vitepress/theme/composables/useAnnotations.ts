@@ -124,6 +124,7 @@ export function useAnnotations() {
     }
     if (!discussionId) {
       discussionId = await createDiscussion(pagePath, CATEGORY_NAME, `读者笔记：${pagePath}`)
+      if (discussionId) storeDiscussionId(pagePath, discussionId)
     }
     if (!discussionId) return
     _discussionId = discussionId
@@ -157,7 +158,7 @@ export function useAnnotations() {
       map.set(paragraphId, list)
       annotations.value = map
     }
-    await purgeWorkerCache(pagePath, CATEGORY_NAME)
+    await purgeWorkerCache(pagePath, CATEGORY_NAME, false, undefined, discussionId)
   }
 
   async function replyToAnnotation(pagePath: string, threadId: string, body: string) {
@@ -173,7 +174,7 @@ export function useAnnotations() {
         }
       }
     }
-    await purgeWorkerCache(pagePath, CATEGORY_NAME)
+    await purgeWorkerCache(pagePath, CATEGORY_NAME, false, undefined, _discussionId)
   }
 
   const toggleReaction = createReactionToggler((subjectId) => {

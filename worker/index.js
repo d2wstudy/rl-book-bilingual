@@ -7,6 +7,7 @@
 //   GITHUB_CLIENT_ID_DEV    — (optional) dev OAuth App client ID
 //   GITHUB_CLIENT_SECRET_DEV — (optional) dev OAuth App client secret
 //   GITHUB_PAT              — fine-grained PAT with Discussions read-only access
+//   CACHE_PURGE_KEY          — (optional) allow cache purge without user token (send as X-Purge-Key)
 
 const REPO_OWNER = 'd2wstudy'
 const REPO_NAME = 'rl-book-bilingual'
@@ -29,7 +30,7 @@ export default {
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Purge-Key, X-Cache-Purge-Key',
     }
 
     if (request.method === 'OPTIONS') {
@@ -384,6 +385,7 @@ function patchNode(node, subjectId, reaction, delta) {
 async function handleCachePurge(request, url, env, corsHeaders) {
   const pagePath = url.searchParams.get('path')
   const categoryName = url.searchParams.get('category')
+  const knownId = url.searchParams.get('id')
   const userOnly = url.searchParams.get('user_only') === '1'
   const subjectId = url.searchParams.get('subject_id')
   const reaction = url.searchParams.get('reaction')
@@ -394,8 +396,23 @@ async function handleCachePurge(request, url, env, corsHeaders) {
 
   const authHeader = request.headers.get('Authorization')
   const userToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
+  const purgeKey = request.headers.get('X-Purge-Key') || request.headers.get('X-Cache-Purge-Key')
 
   const cache = caches.default
+
+  // Basic protection: require a valid GitHub token (cached validation) OR a server-side purge key.
+  // Without this, anyone can purge shared cache and trigger PAT refills.
+  const hasValidPurgeKey = !!(env.CACHE_PURGE_KEY && purgeKey && purgeKey === env.CACHE_PURGE_KEY)
+  if (!hasValidPurgeKey) {
+    if (!userToken) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders })
+    }
+    const ok = await validateGithubTokenCached(cache, url.origin, userToken)
+    if (!ok) {
+      return Response.json({ error: 'Unauthorized' }, { status: 401, headers: corsHeaders })
+    }
+  }
+
   const cacheKey = buildCacheKey(url)
   let deleted = false
 
@@ -408,8 +425,10 @@ async function handleCachePurge(request, url, env, corsHeaders) {
     const refillToken = userToken || env.GITHUB_PAT
     if (refillToken) {
       try {
-        const fresh = await fetchDiscussion(refillToken, pagePath, categoryName)
-        if (fresh?.comments) {
+        const fresh = await fetchDiscussion(refillToken, pagePath, categoryName, knownId)
+        if (!fresh?.discussionId) {
+          console.log(`[CACHE REFILL SKIP] ${categoryName} | ${pagePath} — discussion not found`)
+        } else {
           overlayReactions(fresh.comments, {})
           fresh._cachedAt = Date.now()
           await cache.put(cacheKey, Response.json(fresh, {
@@ -464,4 +483,41 @@ async function githubGql(token, query, variables) {
   })
   const json = await resp.json()
   return json.data
+}
+
+async function validateGithubToken(token) {
+  try {
+    const resp = await fetch('https://api.github.com/user', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: 'application/vnd.github+json',
+        'User-Agent': 'rl-book-worker',
+      },
+    })
+    return resp.ok
+  } catch {
+    return false
+  }
+}
+
+function buildTokenValidationCacheKey(origin, tokenHash) {
+  const u = new URL(origin + '/api/_token_ok')
+  u.searchParams.set('u', tokenHash)
+  return new Request(u.toString(), { method: 'GET' })
+}
+
+async function validateGithubTokenCached(cache, origin, token) {
+  const tHash = await hashToken(token)
+  const key = buildTokenValidationCacheKey(origin, tHash)
+  const cached = await cache.match(key)
+  if (cached) return true
+
+  const ok = await validateGithubToken(token)
+  if (!ok) return false
+
+  // Cache the "token is valid" marker briefly to avoid an extra GitHub /user call per reaction toggle.
+  await cache.put(key, new Response('ok', {
+    headers: { 'Cache-Control': 'public, max-age=600' }, // 10 minutes
+  }))
+  return true
 }

@@ -56,12 +56,13 @@ Environment-specific OAuth apps configured in `docs/.env.development` and `docs/
 - Notes serialized as JSON in discussion comments with `paragraphId`, offsets, and note text
 
 ### Cloudflare Worker (`worker/index.js`)
-
-OAuth proxy and Discussions read proxy with three routes:
+ 
+OAuth proxy and Discussions read proxy with four routes:
 - `GET /api/discussions?path=xxx&category=Notes` — read discussions (cached 5 min via Cloudflare Cache API, uses `GITHUB_PAT`)
+- `POST /api/cache/purge?path=xxx&category=Notes[&id=xxx]` — purge shared cache after writes (requires `Authorization: Bearer ...`, supports optional `X-Purge-Key`)
 - `POST /api/auth` — exchange OAuth code for token
 - `POST /api/revoke` — revoke OAuth authorization
-
+ 
 Uses separate client ID/secret pairs for dev vs production (env vars with `_DEV` suffix). Worker secrets are set via `wrangler secret`.
 
 ## Key Tech

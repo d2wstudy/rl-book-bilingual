@@ -90,6 +90,7 @@ export function useComments() {
     }
     if (!discussionId) {
       discussionId = await createDiscussion(pagePath, CATEGORY_NAME, `章节讨论：${pagePath}`)
+      if (discussionId) storeDiscussionId(pagePath, discussionId)
     }
     if (!discussionId) return
     _discussionId = discussionId
@@ -107,7 +108,7 @@ export function useComments() {
         reactions: mapReactions(newComment.reactionGroups),
       }]
     }
-    await purgeWorkerCache(pagePath, CATEGORY_NAME)
+    await purgeWorkerCache(pagePath, CATEGORY_NAME, false, undefined, discussionId)
   }
 
   async function replyToComment(pagePath: string, commentId: string, body: string) {
@@ -127,7 +128,7 @@ export function useComments() {
         parent.replies = [...parent.replies, mapReply(newReply)]
       }
     }
-    await purgeWorkerCache(pagePath, CATEGORY_NAME)
+    await purgeWorkerCache(pagePath, CATEGORY_NAME, false, undefined, discussionId)
   }
 
   const toggleReaction = createReactionToggler((subjectId) => {

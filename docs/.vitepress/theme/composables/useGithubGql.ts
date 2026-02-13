@@ -91,6 +91,7 @@ export async function purgeWorkerCache(
   categoryName: string,
   userOnly = false,
   reactionDelta?: { subjectId: string; content: string; delta: number },
+  knownDiscussionId?: string | null,
 ) {
   const params = new URLSearchParams({ path: pagePath, category: categoryName })
   if (userOnly) params.set('user_only', '1')
@@ -99,11 +100,11 @@ export async function purgeWorkerCache(
     params.set('reaction', reactionDelta.content)
     params.set('delta', String(reactionDelta.delta))
   }
+  if (knownDiscussionId) params.set('id', knownDiscussionId)
   const headers: Record<string, string> = {}
   const { token } = useAuth()
-  if (token.value) {
-    headers['Authorization'] = `Bearer ${token.value}`
-  }
+  if (!token.value) return
+  headers['Authorization'] = `Bearer ${token.value}`
   try {
     await fetch(`${WORKER_URL}/api/cache/purge?${params}`, { method: 'POST', headers })
   } catch { /* ignore network errors */ }
