@@ -2,9 +2,9 @@
 import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vitepress'
 import { useAuth } from '../composables/useAuth'
-import { useAnnotations, type AnnotationThread } from '../composables/useAnnotations'
+import { useAnnotations, type AnnotationThread, type AnnotationAnchor } from '../composables/useAnnotations'
 import { purgeWorkerCache } from '../composables/useGithubGql'
-import { captureSelector, resolveSelector, type ResolvedRange } from '../composables/useTextAnchor'
+import { captureSelector, resolveSelector, getFullText, type ResolvedRange } from '../composables/useTextAnchor'
 import NoteBubble from './NoteBubble.vue'
 import NoteEditor from './NoteEditor.vue'
 import AnnotationDrawer from './AnnotationDrawer.vue'
@@ -29,6 +29,7 @@ const selectedInfo = ref<{
   text: string
   prefix: string
   suffix: string
+  segments?: AnnotationAnchor[]
 } | null>(null)
 
 // Prevent click event from immediately closing the bubble after mouseup
@@ -68,17 +69,19 @@ function onMouseUp(e: MouseEvent) {
   if (!sel || sel.isCollapsed || !sel.rangeCount) return
 
   const range = sel.getRangeAt(0)
-  const container = range.commonAncestorContainer
 
-  // Support both Chinese and English blocks
-  const langBlock = findParent(container, '.bilingual-zh') || findParent(container, '.bilingual-en')
-  if (!langBlock) return
+  // Find lang blocks for start and end of selection
+  const startLang = findParent(range.startContainer, '.bilingual-zh') || findParent(range.startContainer, '.bilingual-en')
+  const endLang = findParent(range.endContainer, '.bilingual-zh') || findParent(range.endContainer, '.bilingual-en')
+  if (!startLang || !endLang) return
 
-  const pair = findParent(langBlock, '.bilingual-pair')
-  if (!pair) return
+  // Require same language type across selection
+  const langClass = startLang.classList.contains('bilingual-zh') ? 'bilingual-zh' : 'bilingual-en'
+  if (!endLang.classList.contains(langClass)) return
 
-  const paragraphId = pair.getAttribute('data-pair-id')
-  if (!paragraphId) return
+  const startPair = findParent(startLang, '.bilingual-pair')
+  const endPair = findParent(endLang, '.bilingual-pair')
+  if (!startPair || !endPair) return
 
   const selectedText = sel.toString().trim()
   if (!selectedText) return
@@ -91,10 +94,19 @@ function onMouseUp(e: MouseEvent) {
   justShownBubble = true
 
   // Only capture selection details for logged-in users
-  if (user.value) {
-    const startOffset = getTextOffset(langBlock, range.startContainer, range.startOffset)
-    const endOffset = getTextOffset(langBlock, range.endContainer, range.endOffset)
-    const selector = captureSelector(langBlock, startOffset, endOffset)
+  if (!user.value) {
+    selectedInfo.value = null
+    return
+  }
+
+  if (startPair === endPair) {
+    // Single-paragraph selection — existing logic
+    const paragraphId = startPair.getAttribute('data-pair-id')
+    if (!paragraphId) return
+
+    const startOffset = getTextOffset(startLang, range.startContainer, range.startOffset)
+    const endOffset = getTextOffset(startLang, range.endContainer, range.endOffset)
+    const selector = captureSelector(startLang, startOffset, endOffset)
 
     selectedInfo.value = {
       paragraphId,
@@ -105,7 +117,59 @@ function onMouseUp(e: MouseEvent) {
       suffix: selector.suffix,
     }
   } else {
-    selectedInfo.value = null
+    // Cross-paragraph selection — collect all pairs between start and end
+    const allPairs = Array.from(document.querySelectorAll('.bilingual-pair[data-pair-id]'))
+    const startIdx = allPairs.indexOf(startPair)
+    const endIdx = allPairs.indexOf(endPair)
+    if (startIdx === -1 || endIdx === -1 || startIdx > endIdx) return
+
+    const segments: AnnotationAnchor[] = []
+    for (let i = startIdx; i <= endIdx; i++) {
+      const pair = allPairs[i] as HTMLElement
+      const langBlock = pair.querySelector(`.${langClass}`) as HTMLElement | null
+      if (!langBlock) continue
+
+      const pid = pair.getAttribute('data-pair-id')!
+      const fullText = getFullText(langBlock)
+      const textLen = fullText.length
+      if (textLen === 0) continue
+
+      let sOff: number, eOff: number
+      if (i === startIdx) {
+        sOff = getTextOffset(langBlock, range.startContainer, range.startOffset)
+        eOff = textLen
+      } else if (i === endIdx) {
+        sOff = 0
+        eOff = getTextOffset(langBlock, range.endContainer, range.endOffset)
+      } else {
+        sOff = 0
+        eOff = textLen
+      }
+      if (sOff >= eOff) continue
+
+      const selector = captureSelector(langBlock, sOff, eOff)
+      segments.push({
+        paragraphId: pid,
+        startOffset: sOff,
+        endOffset: eOff,
+        selectedText: selector.exact,
+        prefix: selector.prefix,
+        suffix: selector.suffix,
+      })
+    }
+
+    if (!segments.length) return
+
+    const firstSeg = segments[0]
+    selectedInfo.value = {
+      paragraphId: firstSeg.paragraphId,
+      startOffset: firstSeg.startOffset,
+      endOffset: firstSeg.endOffset,
+      text: selectedText,
+      prefix: firstSeg.prefix,
+      suffix: firstSeg.suffix,
+      segments: segments.length > 1 ? segments : undefined,
+    }
   }
 }
 
@@ -145,6 +209,7 @@ async function submitNote(note: string) {
     note,
     selectedInfo.value.prefix,
     selectedInfo.value.suffix,
+    selectedInfo.value.segments,
   )
 
   showEditor.value = false
@@ -181,33 +246,36 @@ async function onDrawerReact(subjectId: string, content: string) {
 async function onDrawerAddNote(text: string) {
   // Add a new annotation on the same highlight as the first active thread
   if (!activeThreads.value.length) return
-  const anchor = activeThreads.value[0].anchor
+  const thread = activeThreads.value[0]
   await addAnnotation(
     route.path,
-    anchor.paragraphId,
-    anchor.startOffset,
-    anchor.endOffset,
-    anchor.selectedText,
+    thread.anchor.paragraphId,
+    thread.anchor.startOffset,
+    thread.anchor.endOffset,
+    thread.anchor.selectedText,
     text,
-    anchor.prefix,
-    anchor.suffix,
+    thread.anchor.prefix,
+    thread.anchor.suffix,
+    thread.segments ? [...thread.segments.map(s => ({ ...s }))] : undefined,
   )
   syncActiveThreads()
 }
 
 function syncActiveThreads() {
   if (!activeThreads.value.length) return
-  const anchor = activeThreads.value[0].anchor
-  const map = annotations.value
-  const threads = [
-    ...(map.get(anchor.paragraphId) || []),
-  ]
-  // Filter to threads matching the same highlight position
-  activeThreads.value = threads.filter(t =>
-    t.anchor.selectedText === anchor.selectedText &&
-    t.anchor.startOffset === anchor.startOffset &&
-    t.anchor.endOffset === anchor.endOffset
-  )
+  const threadIds = new Set(activeThreads.value.map(t => t.id))
+  // Collect all threads that share any ID with the active set
+  const result: AnnotationThread[] = []
+  const seen = new Set<string>()
+  for (const threads of annotations.value.values()) {
+    for (const t of threads) {
+      if (!seen.has(t.id) && threadIds.has(t.id)) {
+        seen.add(t.id)
+        result.push(t)
+      }
+    }
+  }
+  activeThreads.value = result
 }
 
 /** Render reader annotations as highlighted spans */
@@ -238,19 +306,40 @@ function renderAnnotations() {
     ]
     if (!allThreads.length) return
 
+    // Deduplicate threads (cross-paragraph threads may appear under multiple IDs)
+    const seen = new Set<string>()
+    const uniqueThreads = allThreads.filter(t => {
+      if (seen.has(t.id)) return false
+      seen.add(t.id)
+      return true
+    })
+
     const zhBlock = pair.querySelector('.bilingual-zh')
     if (!zhBlock) return
 
     // Group threads by resolved highlight position
-    const groups: { threads: AnnotationThread[]; range: ResolvedRange }[] = []
+    const groups: { threads: AnnotationThread[]; range: ResolvedRange; showBubble: boolean }[] = []
 
-    for (const thread of allThreads) {
-      const selector = {
-        exact: thread.anchor.selectedText,
-        prefix: thread.anchor.prefix || '',
-        suffix: thread.anchor.suffix || '',
+    for (const thread of uniqueThreads) {
+      // For cross-paragraph threads, find the segment matching this pair
+      let anchor: { selectedText: string; prefix: string; suffix: string; startOffset: number; endOffset: number }
+      let isLastSegment = true
+      if (thread.segments) {
+        const seg = thread.segments.find(s => s.paragraphId === id)
+          || (legacyId ? thread.segments.find(s => s.paragraphId === legacyId) : undefined)
+        if (!seg) continue
+        anchor = seg
+        isLastSegment = seg === thread.segments[thread.segments.length - 1]
+      } else {
+        anchor = thread.anchor
       }
-      const range = resolveSelector(zhBlock, selector, thread.anchor.startOffset, thread.anchor.endOffset)
+
+      const selector = {
+        exact: anchor.selectedText,
+        prefix: anchor.prefix || '',
+        suffix: anchor.suffix || '',
+      }
+      const range = resolveSelector(zhBlock, selector, anchor.startOffset, anchor.endOffset)
       if (!range) continue
 
       // Try to merge with an existing group at the same position
@@ -259,8 +348,9 @@ function renderAnnotations() {
       )
       if (existing) {
         existing.threads.push(thread)
+        if (isLastSegment) existing.showBubble = true
       } else {
-        groups.push({ threads: [thread], range })
+        groups.push({ threads: [thread], range, showBubble: isLastSegment })
       }
     }
 
@@ -268,51 +358,63 @@ function renderAnnotations() {
     groups.sort((a, b) => b.range.startOffset - a.range.startOffset)
 
     for (const group of groups) {
-      highlightRange(zhBlock, group.threads, group.range)
+      highlightRange(zhBlock, group.threads, group.range, group.showBubble)
     }
   })
 }
 
-function highlightRange(container: Element, threads: AnnotationThread[], range: ResolvedRange) {
+function highlightRange(container: Element, threads: AnnotationThread[], range: ResolvedRange, showBubble = true) {
+  // Collect all text nodes that overlap with the range
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
   let offset = 0
-  let node: Text | null
+  const hits: { node: Text; relStart: number; relEnd: number }[] = []
 
+  let node: Text | null
   while ((node = walker.nextNode() as Text | null)) {
     const nodeEnd = offset + node.length
-    if (offset <= range.startOffset && nodeEnd >= range.endOffset) {
-      const relStart = range.startOffset - offset
-      const relEnd = range.endOffset - offset
-
-      const before = node.textContent!.slice(0, relStart)
-      const middle = node.textContent!.slice(relStart, relEnd)
-      const after = node.textContent!.slice(relEnd)
-
-      const span = document.createElement('span')
-      span.className = 'reader-anno'
-      span.textContent = middle
-      span.title = `${threads.length} 条笔记`
-      span.setAttribute('data-anno-id', threads[0].id)
-
-      // Inline bubble (Phosphor Chat Teardrop)
-      const totalNotes = threads.reduce((sum, t) => sum + 1 + t.replies.length, 0)
-      if (totalNotes > 0) {
-        const bubble = document.createElement('span')
-        bubble.className = 'anno-inline-bubble'
-        bubble.innerHTML = `<svg viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"><path d="M132,24A100.11,100.11,0,0,0,32,124v84a16,16,0,0,0,16,16h84a100,100,0,0,0,0-200Z"/></svg><span class="anno-count">${totalNotes}</span>`
-        span.appendChild(bubble)
-      }
-
-      span.addEventListener('click', (e) => onAnnoClick(e as MouseEvent, threads))
-
-      const parent = node.parentNode!
-      if (after) parent.insertBefore(document.createTextNode(after), node.nextSibling)
-      parent.insertBefore(span, node.nextSibling)
-      if (before) parent.insertBefore(document.createTextNode(before), node.nextSibling)
-      parent.removeChild(node)
-      break
+    if (nodeEnd > range.startOffset && offset < range.endOffset) {
+      hits.push({
+        node,
+        relStart: Math.max(0, range.startOffset - offset),
+        relEnd: Math.min(node.length, range.endOffset - offset),
+      })
     }
+    if (nodeEnd >= range.endOffset) break
     offset = nodeEnd
+  }
+
+  if (!hits.length) return
+
+  const totalNotes = threads.reduce((sum, t) => sum + 1 + t.replies.length, 0)
+
+  // Process in reverse so earlier DOM mutations don't shift later nodes
+  for (let i = hits.length - 1; i >= 0; i--) {
+    const { node: textNode, relStart, relEnd } = hits[i]
+    const before = textNode.textContent!.slice(0, relStart)
+    const middle = textNode.textContent!.slice(relStart, relEnd)
+    const after = textNode.textContent!.slice(relEnd)
+
+    const span = document.createElement('span')
+    span.className = 'reader-anno'
+    span.textContent = middle
+    span.title = `${threads.length} 条笔记`
+    span.setAttribute('data-anno-id', threads[0].id)
+
+    // Inline bubble only on the very last span
+    if (showBubble && i === hits.length - 1 && totalNotes > 0) {
+      const bubble = document.createElement('span')
+      bubble.className = 'anno-inline-bubble'
+      bubble.innerHTML = `<svg viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"><path d="M132,24A100.11,100.11,0,0,0,32,124v84a16,16,0,0,0,16,16h84a100,100,0,0,0,0-200Z"/></svg><span class="anno-count">${totalNotes}</span>`
+      span.appendChild(bubble)
+    }
+
+    span.addEventListener('click', (e) => onAnnoClick(e as MouseEvent, threads))
+
+    const parent = textNode.parentNode!
+    if (after) parent.insertBefore(document.createTextNode(after), textNode.nextSibling)
+    parent.insertBefore(span, textNode.nextSibling)
+    if (before) parent.insertBefore(document.createTextNode(before), textNode.nextSibling)
+    parent.removeChild(textNode)
   }
 }
 

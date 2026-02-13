@@ -24,6 +24,8 @@ export interface AnnotationAnchor {
 export interface AnnotationThread {
   id: string
   anchor: AnnotationAnchor
+  /** For cross-paragraph annotations: one anchor per paragraph */
+  segments?: AnnotationAnchor[]
   note: string
   author: string
   authorAvatar: string
@@ -74,6 +76,16 @@ export function useAnnotations() {
           try {
             const data = JSON.parse(c.body)
             if (data.type !== 'annotation') continue
+            const segments: AnnotationAnchor[] | undefined = Array.isArray(data.segments)
+              ? data.segments.map((s: any) => ({
+                  paragraphId: s.paragraphId,
+                  startOffset: s.startOffset,
+                  endOffset: s.endOffset,
+                  selectedText: s.selectedText,
+                  prefix: s.prefix ?? '',
+                  suffix: s.suffix ?? '',
+                }))
+              : undefined
             const thread: AnnotationThread = {
               id: c.id,
               anchor: {
@@ -84,6 +96,7 @@ export function useAnnotations() {
                 prefix: data.prefix ?? '',
                 suffix: data.suffix ?? '',
               },
+              segments,
               note: data.note,
               author: c.author.login,
               authorAvatar: c.author.avatarUrl,
@@ -91,9 +104,15 @@ export function useAnnotations() {
               replies: (c.replies?.nodes || []).map(mapReply),
               reactions: mapReactions(c.reactionGroups),
             }
-            const list = map.get(thread.anchor.paragraphId) || []
-            list.push(thread)
-            map.set(thread.anchor.paragraphId, list)
+            // Index under all segment paragraphIds (or just the primary one)
+            const pids = segments
+              ? [...new Set(segments.map(s => s.paragraphId))]
+              : [thread.anchor.paragraphId]
+            for (const pid of pids) {
+              const list = map.get(pid) || []
+              list.push(thread)
+              map.set(pid, list)
+            }
           } catch {
             // Skip non-annotation comments
           }
@@ -114,6 +133,7 @@ export function useAnnotations() {
     note: string,
     prefix: string = '',
     suffix: string = '',
+    segments?: AnnotationAnchor[],
   ) {
     if (!token.value) return
 
@@ -138,6 +158,7 @@ export function useAnnotations() {
       prefix,
       suffix,
       note,
+      ...(segments ? { segments } : {}),
     })
 
     const newComment = await addDiscussionComment(discussionId, body)
@@ -146,6 +167,7 @@ export function useAnnotations() {
       const thread: AnnotationThread = {
         id: newComment.id,
         anchor: { paragraphId, startOffset, endOffset, selectedText, prefix, suffix },
+        segments,
         note,
         author: newComment.author.login,
         authorAvatar: newComment.author.avatarUrl,
@@ -154,8 +176,13 @@ export function useAnnotations() {
         reactions: mapReactions(newComment.reactionGroups),
       }
       const map = new Map(annotations.value)
-      const list = [...(map.get(paragraphId) || []), thread]
-      map.set(paragraphId, list)
+      const pids = segments
+        ? [...new Set(segments.map(s => s.paragraphId))]
+        : [paragraphId]
+      for (const pid of pids) {
+        const list = [...(map.get(pid) || []), thread]
+        map.set(pid, list)
+      }
       annotations.value = map
     }
     await purgeWorkerCache(pagePath, CATEGORY_NAME, false, undefined, discussionId)

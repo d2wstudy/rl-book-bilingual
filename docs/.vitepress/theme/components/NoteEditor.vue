@@ -61,8 +61,9 @@ function onOverlayClick(e: MouseEvent) {
   border-bottom: none;
   border-radius: 12px 12px 0 0;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
 }
 
 .note-editor-modal :deep(.md-editor) {

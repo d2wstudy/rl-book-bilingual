@@ -21,7 +21,11 @@ const { user, login } = useAuth()
 
 const quoteText = computed(() => {
   if (!props.threads.length) return ''
-  return props.threads[0].anchor.selectedText
+  const thread = props.threads[0]
+  if (thread.segments && thread.segments.length > 1) {
+    return thread.segments.map(s => s.selectedText).join(' … ')
+  }
+  return thread.anchor.selectedText
 })
 
 function onReply(threadId: string, body: string) {
