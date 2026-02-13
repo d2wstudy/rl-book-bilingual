@@ -1,16 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
+import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vitepress'
 import { useAuth } from '../composables/useAuth'
-import { useAnnotations, type Annotation } from '../composables/useAnnotations'
-import { useMarkdown } from '../composables/useMarkdown'
+import { useAnnotations, type AnnotationThread } from '../composables/useAnnotations'
 import { captureSelector, resolveSelector, type ResolvedRange } from '../composables/useTextAnchor'
 import NoteBubble from './NoteBubble.vue'
 import NoteEditor from './NoteEditor.vue'
+import AnnotationDrawer from './AnnotationDrawer.vue'
 
 const { user, token } = useAuth()
-const { annotations, loaded, loadAnnotations, addAnnotation } = useAnnotations()
-const { renderMarkdown } = useMarkdown()
+const { annotations, loaded, loadAnnotations, addAnnotation, replyToAnnotation, toggleReaction } = useAnnotations()
 const route = useRoute()
 
 // Bubble state (step 1: small floating bubble)
@@ -34,14 +33,9 @@ const selectedInfo = ref<{
 // Prevent click event from immediately closing the bubble after mouseup
 let justShownBubble = false
 
-// View annotation state
-const viewAnno = ref<Annotation | null>(null)
-const viewX = ref(0)
-const viewY = ref(0)
-
-const renderedViewNote = computed(() =>
-  viewAnno.value ? renderMarkdown(viewAnno.value.note) : ''
-)
+// Drawer state
+const drawerOpen = ref(false)
+const activeThreads = ref<AnnotationThread[]>([])
 
 onMounted(() => {
   loadAnnotations(route.path)
@@ -56,6 +50,7 @@ onUnmounted(() => {
 
 watch(() => route.path, (path) => {
   loadAnnotations(path)
+  drawerOpen.value = false
 })
 
 watch(token, () => loadAnnotations(route.path))
@@ -115,9 +110,8 @@ function onDocClick(e: MouseEvent) {
     return
   }
   const target = e.target as HTMLElement
-  if (!target.closest('.note-bubble') && !target.closest('.note-editor-overlay') && !target.closest('.reader-anno')) {
+  if (!target.closest('.note-bubble') && !target.closest('.note-editor-overlay') && !target.closest('.reader-anno') && !target.closest('.annotation-drawer')) {
     showBubble.value = false
-    viewAnno.value = null
   }
 }
 
@@ -150,15 +144,59 @@ function cancelEditor() {
   selectedInfo.value = null
 }
 
-function onAnnoClick(e: MouseEvent, anno: Annotation) {
+function onAnnoClick(e: MouseEvent, threads: AnnotationThread[]) {
   e.stopPropagation()
-  const rect = (e.target as HTMLElement).getBoundingClientRect()
-  viewX.value = rect.left + rect.width / 2
-  viewY.value = rect.top - 10
-  viewAnno.value = anno
+  activeThreads.value = threads
+  drawerOpen.value = true
 }
 
-/** Render reader annotations as highlighted spans in the zh blocks */
+function closeDrawer() {
+  drawerOpen.value = false
+}
+
+async function onDrawerReply(threadId: string, body: string) {
+  await replyToAnnotation(route.path, threadId, body)
+  // Update activeThreads from refreshed annotations
+  syncActiveThreads()
+}
+
+async function onDrawerReact(subjectId: string, content: string) {
+  await toggleReaction(subjectId, content)
+}
+
+async function onDrawerAddNote(text: string) {
+  // Add a new annotation on the same highlight as the first active thread
+  if (!activeThreads.value.length) return
+  const anchor = activeThreads.value[0].anchor
+  await addAnnotation(
+    route.path,
+    anchor.paragraphId,
+    anchor.startOffset,
+    anchor.endOffset,
+    anchor.selectedText,
+    text,
+    anchor.prefix,
+    anchor.suffix,
+  )
+  syncActiveThreads()
+}
+
+function syncActiveThreads() {
+  if (!activeThreads.value.length) return
+  const anchor = activeThreads.value[0].anchor
+  const map = annotations.value
+  const threads = [
+    ...(map.get(anchor.paragraphId) || []),
+  ]
+  // Filter to threads matching the same highlight position
+  activeThreads.value = threads.filter(t =>
+    t.anchor.selectedText === anchor.selectedText &&
+    t.anchor.startOffset === anchor.startOffset &&
+    t.anchor.endOffset === anchor.endOffset
+  )
+}
+
+/** Render reader annotations as highlighted spans */
 function renderAnnotations() {
   if (typeof document === 'undefined') return
 
@@ -175,39 +213,48 @@ function renderAnnotations() {
     const legacyId = pair.getAttribute('data-pair-id-legacy')
 
     // Collect annotations matching either the new hash-based ID or the legacy counter-based ID
-    const annos = [
+    const allThreads = [
       ...(map.get(id) || []),
       ...(legacyId && legacyId !== id ? (map.get(legacyId) || []) : []),
     ]
-    if (!annos.length) return
+    if (!allThreads.length) return
 
     const zhBlock = pair.querySelector('.bilingual-zh')
     if (!zhBlock) return
 
-    // Resolve each annotation to current offsets via TextQuoteSelector matching
-    const resolved: { anno: Annotation; range: ResolvedRange }[] = []
-    for (const anno of annos) {
+    // Group threads by resolved highlight position
+    const groups: { threads: AnnotationThread[]; range: ResolvedRange }[] = []
+
+    for (const thread of allThreads) {
       const selector = {
-        exact: anno.selectedText,
-        prefix: anno.prefix || '',
-        suffix: anno.suffix || '',
+        exact: thread.anchor.selectedText,
+        prefix: thread.anchor.prefix || '',
+        suffix: thread.anchor.suffix || '',
       }
-      const range = resolveSelector(zhBlock, selector, anno.startOffset, anno.endOffset)
-      if (range) {
-        resolved.push({ anno, range })
+      const range = resolveSelector(zhBlock, selector, thread.anchor.startOffset, thread.anchor.endOffset)
+      if (!range) continue
+
+      // Try to merge with an existing group at the same position
+      const existing = groups.find(g =>
+        g.range.startOffset === range.startOffset && g.range.endOffset === range.endOffset
+      )
+      if (existing) {
+        existing.threads.push(thread)
+      } else {
+        groups.push({ threads: [thread], range })
       }
     }
 
     // Sort by descending startOffset so DOM mutations don't shift later offsets
-    resolved.sort((a, b) => b.range.startOffset - a.range.startOffset)
+    groups.sort((a, b) => b.range.startOffset - a.range.startOffset)
 
-    for (const { anno, range } of resolved) {
-      highlightRange(zhBlock, anno, range)
+    for (const group of groups) {
+      highlightRange(zhBlock, group.threads, group.range)
     }
   })
 }
 
-function highlightRange(container: Element, anno: Annotation, range: ResolvedRange) {
+function highlightRange(container: Element, threads: AnnotationThread[], range: ResolvedRange) {
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
   let offset = 0
   let node: Text | null
@@ -225,9 +272,19 @@ function highlightRange(container: Element, anno: Annotation, range: ResolvedRan
       const span = document.createElement('span')
       span.className = 'reader-anno'
       span.textContent = middle
-      span.title = `${anno.author}: ${anno.note}`
-      span.setAttribute('data-anno-id', anno.id)
-      span.addEventListener('click', (e) => onAnnoClick(e as MouseEvent, anno))
+      span.title = `${threads.length} 条笔记`
+      span.setAttribute('data-anno-id', threads[0].id)
+
+      // Badge showing note count
+      const totalNotes = threads.reduce((sum, t) => sum + 1 + t.replies.length, 0)
+      if (totalNotes > 0) {
+        const badge = document.createElement('span')
+        badge.className = 'anno-badge'
+        badge.textContent = String(totalNotes)
+        span.appendChild(badge)
+      }
+
+      span.addEventListener('click', (e) => onAnnoClick(e as MouseEvent, threads))
 
       const parent = node.parentNode!
       if (after) parent.insertBefore(document.createTextNode(after), node.nextSibling)
@@ -280,85 +337,13 @@ function findParent(node: Node, selector: string): HTMLElement | null {
     @cancel="cancelEditor"
   />
 
-  <!-- View annotation popup -->
-  <Teleport to="body">
-    <div
-      v-if="viewAnno"
-      class="note-popup-view"
-      :style="{ left: viewX + 'px', top: viewY + 'px' }"
-    >
-      <div class="note-view-header">
-        <img :src="viewAnno.authorAvatar" class="note-avatar" />
-        <span class="note-author">{{ viewAnno.author }}</span>
-      </div>
-      <div class="note-view-body" v-html="renderedViewNote" />
-    </div>
-  </Teleport>
+  <!-- Step 3: Annotation drawer -->
+  <AnnotationDrawer
+    :open="drawerOpen"
+    :threads="activeThreads"
+    @close="closeDrawer"
+    @reply="onDrawerReply"
+    @react="onDrawerReact"
+    @add-note="onDrawerAddNote"
+  />
 </template>
-
-<style scoped>
-.note-popup-view {
-  position: fixed;
-  transform: translateX(-50%) translateY(-100%);
-  background: var(--vp-c-bg-elv);
-  border: 1px solid var(--vp-c-divider);
-  border-radius: 10px;
-  padding: 12px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
-  z-index: 200;
-  width: 300px;
-}
-
-.note-view-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.note-avatar {
-  width: 20px;
-  height: 20px;
-  border-radius: 50%;
-}
-
-.note-author {
-  font-size: 12px;
-  color: var(--vp-c-text-2);
-  font-weight: 500;
-}
-
-.note-view-body {
-  font-size: 13px;
-  line-height: 1.6;
-  color: var(--vp-c-text-1);
-}
-
-.note-view-body :deep(p) { margin: 4px 0; }
-.note-view-body :deep(code) {
-  background: var(--vp-c-bg-soft);
-  padding: 2px 4px;
-  border-radius: 3px;
-  font-size: 12px;
-}
-.note-view-body :deep(pre) {
-  background: var(--vp-c-bg-soft);
-  padding: 8px;
-  border-radius: 6px;
-  overflow-x: auto;
-  margin: 6px 0;
-}
-.note-view-body :deep(pre code) {
-  background: none;
-  padding: 0;
-}
-.note-view-body :deep(blockquote) {
-  border-left: 3px solid var(--vp-c-divider);
-  padding-left: 8px;
-  color: var(--vp-c-text-2);
-  margin: 4px 0;
-}
-.note-view-body :deep(a) { color: var(--vp-c-brand-1); }
-.note-view-body :deep(ul),
-.note-view-body :deep(ol) { padding-left: 18px; }
-</style>

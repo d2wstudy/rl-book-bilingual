@@ -1,27 +1,39 @@
 import { ref, readonly } from 'vue'
 import { useAuth } from './useAuth'
-import { findDiscussionWithComments, createDiscussion, addDiscussionComment } from './useGithubGql'
+import {
+  findDiscussionWithComments, createDiscussion,
+  addDiscussionComment, addDiscussionReply,
+} from './useGithubGql'
+import {
+  type ReactionGroup, type ThreadReply,
+  mapReactions, mapReply, createReactionToggler,
+} from './useDiscussionThread'
 
 const CATEGORY_NAME = 'Notes'
 
-export interface Annotation {
-  id: string
+export interface AnnotationAnchor {
   paragraphId: string
   startOffset: number
   endOffset: number
   selectedText: string
-  /** Up to 32 chars before the selection (TextQuoteSelector context) */
   prefix: string
-  /** Up to 32 chars after the selection (TextQuoteSelector context) */
   suffix: string
+}
+
+export interface AnnotationThread {
+  id: string
+  anchor: AnnotationAnchor
   note: string
   author: string
   authorAvatar: string
   createdAt: string
+  replies: ThreadReply[]
+  reactions: ReactionGroup[]
 }
 
-const annotations = ref<Map<string, Annotation[]>>(new Map())
+const annotations = ref<Map<string, AnnotationThread[]>>(new Map())
 const loaded = ref(false)
+let _discussionId: string | null = null
 
 export function useAnnotations() {
   const { token } = useAuth()
@@ -29,28 +41,34 @@ export function useAnnotations() {
   async function loadAnnotations(pagePath: string) {
     try {
       const result = await findDiscussionWithComments(pagePath, CATEGORY_NAME)
-      const map = new Map<string, Annotation[]>()
+      const map = new Map<string, AnnotationThread[]>()
+      _discussionId = null
       if (result) {
+        _discussionId = result.discussionId
         for (const c of result.comments) {
           try {
             const data = JSON.parse(c.body)
             if (data.type !== 'annotation') continue
-            const anno: Annotation = {
+            const thread: AnnotationThread = {
               id: c.id,
-              paragraphId: data.paragraphId,
-              startOffset: data.startOffset,
-              endOffset: data.endOffset,
-              selectedText: data.selectedText,
-              prefix: data.prefix ?? '',
-              suffix: data.suffix ?? '',
+              anchor: {
+                paragraphId: data.paragraphId,
+                startOffset: data.startOffset,
+                endOffset: data.endOffset,
+                selectedText: data.selectedText,
+                prefix: data.prefix ?? '',
+                suffix: data.suffix ?? '',
+              },
               note: data.note,
               author: c.author.login,
               authorAvatar: c.author.avatarUrl,
               createdAt: c.createdAt,
+              replies: (c.replies?.nodes || []).map(mapReply),
+              reactions: mapReactions(c.reactionGroups),
             }
-            const list = map.get(anno.paragraphId) || []
-            list.push(anno)
-            map.set(anno.paragraphId, list)
+            const list = map.get(thread.anchor.paragraphId) || []
+            list.push(thread)
+            map.set(thread.anchor.paragraphId, list)
           } catch {
             // Skip non-annotation comments
           }
@@ -74,8 +92,11 @@ export function useAnnotations() {
   ) {
     if (!token.value) return
 
-    let result = await findDiscussionWithComments(pagePath, CATEGORY_NAME)
-    let discussionId = result?.discussionId
+    let discussionId = _discussionId
+    if (!discussionId) {
+      const result = await findDiscussionWithComments(pagePath, CATEGORY_NAME)
+      discussionId = result?.discussionId ?? null
+    }
     if (!discussionId) {
       discussionId = await createDiscussion(pagePath, CATEGORY_NAME, `读者笔记：${pagePath}`)
     }
@@ -96,10 +117,30 @@ export function useAnnotations() {
     await loadAnnotations(pagePath)
   }
 
+  async function replyToAnnotation(pagePath: string, threadId: string, body: string) {
+    if (!token.value || !_discussionId) return
+    await addDiscussionReply(_discussionId, threadId, body)
+    await loadAnnotations(pagePath)
+  }
+
+  const toggleReaction = createReactionToggler((subjectId) => {
+    for (const threads of annotations.value.values()) {
+      for (const t of threads) {
+        if (t.id === subjectId) return t
+        for (const r of t.replies) {
+          if (r.id === subjectId) return r
+        }
+      }
+    }
+    return null
+  })
+
   return {
     annotations: readonly(annotations),
     loaded: readonly(loaded),
     loadAnnotations,
     addAnnotation,
+    replyToAnnotation,
+    toggleReaction,
   }
 }

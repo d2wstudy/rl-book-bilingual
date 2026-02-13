@@ -1,26 +1,19 @@
 import { ref, readonly } from 'vue'
 import { useAuth } from './useAuth'
 import {
-  findDiscussionWithComments, createDiscussion, addDiscussionComment,
-  addDiscussionReply, addReaction, removeReaction,
+  findDiscussionWithComments, createDiscussion,
+  addDiscussionComment, addDiscussionReply,
 } from './useGithubGql'
+import {
+  type ReactionGroup, type ThreadReply,
+  mapReactions, mapReply, createReactionToggler,
+} from './useDiscussionThread'
 
 const CATEGORY_NAME = 'Announcements'
 
-export interface ReactionGroup {
-  content: string
-  count: number
-  viewerHasReacted: boolean
-}
-
-export interface Reply {
-  id: string
-  body: string
-  author: string
-  authorAvatar: string
-  createdAt: string
-  reactions: ReactionGroup[]
-}
+// Re-export shared types for backward compatibility
+export type { ReactionGroup }
+export type Reply = ThreadReply
 
 export interface Comment {
   id: string
@@ -28,35 +21,13 @@ export interface Comment {
   author: string
   authorAvatar: string
   createdAt: string
-  replies: Reply[]
+  replies: ThreadReply[]
   reactions: ReactionGroup[]
 }
 
 const comments = ref<Comment[]>([])
 const loaded = ref(false)
 let _discussionId: string | null = null
-
-function mapReactions(groups: any[]): ReactionGroup[] {
-  if (!groups) return []
-  return groups
-    .map((g: any) => ({
-      content: g.content,
-      count: g.reactors?.totalCount ?? g.users?.totalCount ?? 0,
-      viewerHasReacted: g.viewerHasReacted ?? false,
-    }))
-    .filter((g: ReactionGroup) => g.count > 0 || g.viewerHasReacted)
-}
-
-function mapReply(r: any): Reply {
-  return {
-    id: r.id,
-    body: r.body,
-    author: r.author.login,
-    authorAvatar: r.author.avatarUrl,
-    createdAt: r.createdAt,
-    reactions: mapReactions(r.reactionGroups),
-  }
-}
 
 export function useComments() {
   const { token } = useAuth()
@@ -113,32 +84,7 @@ export function useComments() {
     await loadComments(pagePath)
   }
 
-  async function toggleReaction(subjectId: string, content: string) {
-    if (!token.value) return
-
-    // Find the reaction in comments or replies and toggle optimistically
-    const target = findReactionTarget(subjectId)
-    if (!target) return
-
-    const existing = target.reactions.find(r => r.content === content)
-    if (existing?.viewerHasReacted) {
-      existing.count--
-      existing.viewerHasReacted = false
-      if (existing.count <= 0) {
-        target.reactions.splice(target.reactions.indexOf(existing), 1)
-      }
-      await removeReaction(subjectId, content)
-    } else if (existing) {
-      existing.count++
-      existing.viewerHasReacted = true
-      await addReaction(subjectId, content)
-    } else {
-      target.reactions.push({ content, count: 1, viewerHasReacted: true })
-      await addReaction(subjectId, content)
-    }
-  }
-
-  function findReactionTarget(subjectId: string): { reactions: ReactionGroup[] } | null {
+  const toggleReaction = createReactionToggler((subjectId) => {
     for (const c of comments.value) {
       if (c.id === subjectId) return c
       for (const r of c.replies) {
@@ -146,7 +92,7 @@ export function useComments() {
       }
     }
     return null
-  }
+  })
 
   return {
     comments: readonly(comments),
