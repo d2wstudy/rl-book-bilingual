@@ -6,7 +6,6 @@ import { useAnnotations, type AnnotationThread, type AnnotationAnchor } from '..
 import { purgeWorkerCache } from '../composables/useGithubGql'
 import { captureSelector, resolveSelector, getFullText, type ResolvedRange } from '../composables/useTextAnchor'
 import NoteBubble from './NoteBubble.vue'
-import NoteEditor from './NoteEditor.vue'
 import AnnotationDrawer from './AnnotationDrawer.vue'
 
 const { user, token, login } = useAuth()
@@ -18,8 +17,8 @@ const showBubble = ref(false)
 const bubbleX = ref(0)
 const bubbleY = ref(0)
 
-// Editor state (step 2: markdown editor modal)
-const showEditor = ref(false)
+// Editor state: pending note shown as inline card in sidebar
+const pendingNote = ref<{ text: string } | null>(null)
 
 // Selection info
 const selectedInfo = ref<{
@@ -180,14 +179,18 @@ function onDocClick(e: MouseEvent) {
     return
   }
   const target = e.target as HTMLElement
-  if (!target.closest('.note-bubble') && !target.closest('.note-editor-overlay') && !target.closest('.reader-anno') && !target.closest('.annotation-drawer')) {
+  if (!target.closest('.note-bubble') && !target.closest('.reader-anno') && !target.closest('.annotation-sidebar')) {
     showBubble.value = false
   }
 }
 
 function openEditor() {
   showBubble.value = false
-  showEditor.value = true
+  if (selectedInfo.value) {
+    pendingNote.value = { text: selectedInfo.value.text }
+  }
+  activeThreads.value = []
+  drawerOpen.value = true
   window.getSelection()?.removeAllRanges()
 }
 
@@ -212,23 +215,20 @@ async function submitNote(note: string) {
     selectedInfo.value.segments,
   )
 
-  showEditor.value = false
+  pendingNote.value = null
   selectedInfo.value = null
 }
 
-function cancelEditor() {
-  showEditor.value = false
+function cancelPendingNote() {
+  pendingNote.value = null
   selectedInfo.value = null
 }
 
 function onAnnoClick(e: MouseEvent, threads: AnnotationThread[]) {
   e.stopPropagation()
+  pendingNote.value = null
   activeThreads.value = threads
   drawerOpen.value = true
-}
-
-function closeDrawer() {
-  drawerOpen.value = false
 }
 
 async function onDrawerReply(threadId: string, body: string) {
@@ -243,22 +243,10 @@ async function onDrawerReact(subjectId: string, content: string) {
     result ? { subjectId, content, delta: result.delta } : undefined)
 }
 
-async function onDrawerAddNote(text: string) {
-  // Add a new annotation on the same highlight as the first active thread
-  if (!activeThreads.value.length) return
-  const thread = activeThreads.value[0]
-  await addAnnotation(
-    route.path,
-    thread.anchor.paragraphId,
-    thread.anchor.startOffset,
-    thread.anchor.endOffset,
-    thread.anchor.selectedText,
-    text,
-    thread.anchor.prefix,
-    thread.anchor.suffix,
-    thread.segments ? [...thread.segments.map(s => ({ ...s }))] : undefined,
-  )
-  syncActiveThreads()
+function closeDrawer() {
+  drawerOpen.value = false
+  pendingNote.value = null
+  selectedInfo.value = null
 }
 
 function syncActiveThreads() {
@@ -498,21 +486,15 @@ function findParent(node: Node, selector: string): HTMLElement | null {
     @login="handleLogin"
   />
 
-  <!-- Step 2: Markdown editor modal -->
-  <NoteEditor
-    v-if="showEditor && selectedInfo"
-    :selected-text="selectedInfo.text"
-    @submit="submitNote"
-    @cancel="cancelEditor"
-  />
-
-  <!-- Step 3: Annotation drawer -->
+  <!-- Annotation sidebar -->
   <AnnotationDrawer
     :open="drawerOpen"
     :threads="activeThreads"
+    :pending-note="pendingNote"
     @close="closeDrawer"
     @reply="onDrawerReply"
     @react="onDrawerReact"
-    @add-note="onDrawerAddNote"
+    @submit-note="submitNote"
+    @cancel-note="cancelPendingNote"
   />
 </template>
