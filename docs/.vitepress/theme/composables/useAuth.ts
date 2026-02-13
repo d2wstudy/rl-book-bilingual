@@ -27,8 +27,8 @@ export function useAuth() {
       return
     }
 
-    // Restore from sessionStorage
-    const saved = sessionStorage.getItem('gh-token')
+    // Restore from localStorage (persists across browser sessions)
+    const saved = localStorage.getItem('gh-token')
     if (saved) {
       token.value = saved
       loading.value = true
@@ -55,7 +55,7 @@ export function useAuth() {
     const savedToken = token.value
     token.value = null
     user.value = null
-    sessionStorage.removeItem('gh-token')
+    localStorage.removeItem('gh-token')
     // Revoke GitHub OAuth grant so next login shows the authorization page,
     // allowing the user to switch accounts
     if (savedToken) {
@@ -81,7 +81,7 @@ export function useAuth() {
       const data = await resp.json()
       if (data.access_token) {
         token.value = data.access_token
-        sessionStorage.setItem('gh-token', data.access_token)
+        localStorage.setItem('gh-token', data.access_token)
         await fetchUser()
         // Redirect back to the page where user clicked login
         const redirect = sessionStorage.getItem('gh-redirect')
