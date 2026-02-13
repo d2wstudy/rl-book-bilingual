@@ -215,8 +215,13 @@ function renderAnnotations() {
   if (typeof document === 'undefined') return
 
   document.querySelectorAll('.reader-anno').forEach((el) => {
-    const text = document.createTextNode(el.textContent || '')
-    el.parentNode?.replaceChild(text, el)
+    // Only collect direct text nodes — exclude .anno-inline-bubble content
+    // to prevent badge numbers leaking into the text on HMR re-renders
+    let raw = ''
+    el.childNodes.forEach(child => {
+      if (child.nodeType === Node.TEXT_NODE) raw += child.textContent || ''
+    })
+    el.parentNode?.replaceChild(document.createTextNode(raw), el)
   })
 
   const map = annotations.value
