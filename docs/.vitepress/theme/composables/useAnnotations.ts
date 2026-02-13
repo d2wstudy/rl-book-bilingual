@@ -3,7 +3,6 @@ import { useAuth } from './useAuth'
 import {
   findDiscussionWithComments, createDiscussion,
   addDiscussionComment, addDiscussionReply,
-  invalidateDiscussionCache,
 } from './useGithubGql'
 import {
   type ReactionGroup, type ThreadReply,
@@ -38,6 +37,13 @@ let _discussionId: string | null = null
 let _loadPromise: Promise<void> | null = null
 let _loadingPath: string | null = null
 
+function storedDiscussionId(pagePath: string): string | null {
+  try { return sessionStorage.getItem(`disc::${CATEGORY_NAME}::${pagePath}`) } catch { return null }
+}
+function storeDiscussionId(pagePath: string, id: string) {
+  try { sessionStorage.setItem(`disc::${CATEGORY_NAME}::${pagePath}`, id) } catch {}
+}
+
 export function useAnnotations() {
   const { token } = useAuth()
 
@@ -46,7 +52,6 @@ export function useAnnotations() {
       if (!force) return _loadPromise
       await _loadPromise
     }
-    if (force) invalidateDiscussionCache(pagePath, CATEGORY_NAME)
     _loadingPath = pagePath
     _loadPromise = _doLoadAnnotations(pagePath).finally(() => {
       _loadPromise = null
@@ -56,13 +61,14 @@ export function useAnnotations() {
   }
 
   async function _doLoadAnnotations(pagePath: string) {
-    const knownId = _discussionId
+    const knownId = _discussionId || storedDiscussionId(pagePath)
     try {
       const result = await findDiscussionWithComments(pagePath, CATEGORY_NAME, knownId)
       const map = new Map<string, AnnotationThread[]>()
       _discussionId = null
       if (result) {
         _discussionId = result.discussionId
+        if (result.discussionId) storeDiscussionId(pagePath, result.discussionId)
         for (const c of result.comments) {
           try {
             const data = JSON.parse(c.body)
@@ -150,10 +156,9 @@ export function useAnnotations() {
       map.set(paragraphId, list)
       annotations.value = map
     }
-    invalidateDiscussionCache(pagePath, CATEGORY_NAME)
   }
 
-  async function replyToAnnotation(pagePath: string, threadId: string, body: string) {
+  async function replyToAnnotation(_pagePath: string, threadId: string, body: string) {
     if (!token.value || !_discussionId) return
     const newReply = await addDiscussionReply(_discussionId, threadId, body)
     if (newReply) {
@@ -166,7 +171,6 @@ export function useAnnotations() {
         }
       }
     }
-    invalidateDiscussionCache(pagePath, CATEGORY_NAME)
   }
 
   const toggleReaction = createReactionToggler((subjectId) => {

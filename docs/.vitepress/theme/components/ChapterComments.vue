@@ -3,7 +3,6 @@ import { ref, watch, computed } from 'vue'
 import { useRoute } from 'vitepress'
 import { useAuth } from '../composables/useAuth'
 import { useComments } from '../composables/useComments'
-import { invalidateDiscussionCache } from '../composables/useGithubGql'
 import { formatRelativeTime } from '../composables/useDiscussionThread'
 import MarkdownEditor from './MarkdownEditor.vue'
 import CommentItem from './CommentItem.vue'
@@ -43,7 +42,6 @@ async function onReply(commentId: string, body: string) {
 
 async function onReact(subjectId: string, content: string) {
   await toggleReaction(subjectId, content)
-  invalidateDiscussionCache(route.path, 'Announcements')
 }
 </script>
 

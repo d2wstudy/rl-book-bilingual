@@ -5,23 +5,94 @@ const REPO_NAME = 'rl-book-bilingual'
 const GRAPHQL_URL = 'https://api.github.com/graphql'
 const WORKER_URL = 'https://rl-book-auth.d2w.workers.dev'
 
-// --- Cache layer ---
-const CACHE_TTL = 5 * 60 * 1000 // 5 minutes
-interface CacheEntry<T> {
-  data: T
-  ts: number
-}
-const _discussionCache = new Map<string, CacheEntry<any>>()
+// --- Deduplication layer (no TTL cache — always fetch fresh data) ---
 const _inflightDiscussions = new Map<string, Promise<any>>()
 
-function cacheKey(pagePath: string, categoryName: string) {
-  return `${categoryName}::${pagePath}`
+// --- Microtask batch queue (combines multiple category fetches into one GraphQL call) ---
+interface BatchRequest {
+  pagePath: string
+  categoryName: string
+  knownId: string | null
+  resolve: (result: { discussionId: string | null; comments: any[] } | null) => void
+  reject: (err: any) => void
+}
+let _batchQueue: BatchRequest[] = []
+let _batchScheduled = false
+
+const COMMENT_FIELDS = `
+  id body createdAt author { login avatarUrl }
+  reactionGroups { content viewerHasReacted reactors { totalCount } }
+  replies(first: 50) {
+    nodes {
+      id body createdAt author { login avatarUrl }
+      reactionGroups { content viewerHasReacted reactors { totalCount } }
+    }
+  }
+`
+
+function scheduleBatch() {
+  if (!_batchScheduled) {
+    _batchScheduled = true
+    Promise.resolve().then(processBatch)
+  }
 }
 
-/** Invalidate client-side cached discussion data for a page (call after mutations).
- *  Worker cache is never purged — it expires naturally via TTL (5 min). */
-export function invalidateDiscussionCache(pagePath: string, categoryName: string) {
-  _discussionCache.delete(cacheKey(pagePath, categoryName))
+async function processBatch() {
+  const queue = _batchQueue
+  _batchQueue = []
+  _batchScheduled = false
+  if (queue.length === 0) return
+
+  // Single request — skip dynamic query building
+  if (queue.length === 1) {
+    const req = queue[0]
+    try {
+      const result = req.knownId
+        ? await fetchDiscussionById(req.knownId)
+        : await fetchDirectFromGitHub(req.pagePath, req.categoryName)
+      req.resolve(result)
+    } catch (err) { req.reject(err) }
+    return
+  }
+
+  // Build a single batched GraphQL query with aliases
+  const varDefs: string[] = []
+  const queryParts: string[] = []
+  const variables: Record<string, any> = {}
+
+  for (let i = 0; i < queue.length; i++) {
+    const req = queue[i]
+    if (req.knownId) {
+      varDefs.push(`$id${i}: ID!`)
+      variables[`id${i}`] = req.knownId
+      queryParts.push(`d${i}: node(id: $id${i}) { ... on Discussion { id comments(first: 100) { nodes { ${COMMENT_FIELDS} } } } }`)
+    } else {
+      const searchQuery = `repo:${REPO_OWNER}/${REPO_NAME} in:title ${JSON.stringify(req.pagePath)} category:${JSON.stringify(req.categoryName)}`
+      varDefs.push(`$q${i}: String!`)
+      variables[`q${i}`] = searchQuery
+      queryParts.push(`d${i}: search(query: $q${i}, type: DISCUSSION, first: 3) { nodes { ... on Discussion { id title comments(first: 100) { nodes { ${COMMENT_FIELDS} } } } } }`)
+    }
+  }
+
+  try {
+    const data = await gql(`query(${varDefs.join(', ')}) {\n${queryParts.join('\n')}\n}`, variables)
+
+    for (let i = 0; i < queue.length; i++) {
+      const req = queue[i]
+      const raw = data?.[`d${i}`]
+      if (req.knownId) {
+        req.resolve(raw ? { discussionId: raw.id, comments: raw.comments.nodes } : null)
+      } else {
+        const nodes = raw?.nodes || []
+        const match = nodes.find((n: any) => n.title === req.pagePath)
+        req.resolve(match
+          ? { discussionId: match.id, comments: match.comments.nodes }
+          : { discussionId: null, comments: [] })
+      }
+    }
+  } catch (err) {
+    for (const req of queue) req.reject(err)
+  }
 }
 
 // Shared category ID cache (Promise-based to deduplicate concurrent calls)
@@ -52,47 +123,43 @@ export async function getCategoryId(categoryName: string): Promise<string | null
 }
 
 /** Find a discussion by title in a category AND fetch its comments.
- *  If knownDiscussionId is provided, uses cheaper node(id) query instead of search. */
+ *  Authenticated users: batched via microtask queue (multiple categories merged into one API call).
+ *  Unauthenticated users: fetched via Worker proxy. */
 export async function findDiscussionWithComments(
   pagePath: string,
   categoryName: string,
   knownDiscussionId?: string | null,
 ): Promise<{ discussionId: string | null; comments: any[] } | null> {
-  const key = cacheKey(pagePath, categoryName)
+  const key = `${categoryName}::${pagePath}`
 
-  // Return cached data if fresh
-  const cached = _discussionCache.get(key)
-  if (cached && Date.now() - cached.ts < CACHE_TTL) {
-    return cached.data
-  }
-
-  // Deduplicate concurrent in-flight requests
+  // Deduplicate concurrent in-flight requests for the same category+page
   const inflight = _inflightDiscussions.get(key)
   if (inflight) return inflight
 
-  const promise = _fetchDiscussion(pagePath, categoryName, knownDiscussionId)
-    .then((result) => {
-      _discussionCache.set(key, { data: result, ts: Date.now() })
-      return result
+  const { token } = useAuth()
+
+  let promise: Promise<{ discussionId: string | null; comments: any[] } | null>
+
+  if (!token.value) {
+    // Unauthenticated: use Worker proxy
+    promise = fetchViaProxy(pagePath, categoryName)
+  } else {
+    // Authenticated: enqueue for microtask batching
+    promise = new Promise((resolve, reject) => {
+      _batchQueue.push({
+        pagePath,
+        categoryName,
+        knownId: knownDiscussionId ?? null,
+        resolve,
+        reject,
+      })
+      scheduleBatch()
     })
-    .finally(() => {
-      _inflightDiscussions.delete(key)
-    })
+  }
 
   _inflightDiscussions.set(key, promise)
+  promise.finally(() => _inflightDiscussions.delete(key))
   return promise
-}
-
-async function _fetchDiscussion(
-  pagePath: string,
-  categoryName: string,
-  knownDiscussionId?: string | null,
-): Promise<{ discussionId: string | null; comments: any[] } | null> {
-  const { token } = useAuth()
-  if (!token.value) return fetchViaProxy(pagePath, categoryName)
-  // If we already know the discussion ID, use cheaper node() query instead of search
-  if (knownDiscussionId) return fetchDiscussionById(knownDiscussionId)
-  return fetchDirectFromGitHub(pagePath, categoryName)
 }
 
 /** Fetch a known discussion by its node ID (cheaper than search) */
@@ -104,16 +171,7 @@ async function fetchDiscussionById(
       ... on Discussion {
         id
         comments(first: 100) {
-          nodes {
-            id body createdAt author { login avatarUrl }
-            reactionGroups { content viewerHasReacted reactors { totalCount } }
-            replies(first: 50) {
-              nodes {
-                id body createdAt author { login avatarUrl }
-                reactionGroups { content viewerHasReacted reactors { totalCount } }
-              }
-            }
-          }
+          nodes { ${COMMENT_FIELDS} }
         }
       }
     }
@@ -138,16 +196,7 @@ async function fetchDirectFromGitHub(
           id
           title
           comments(first: 100) {
-            nodes {
-              id body createdAt author { login avatarUrl }
-              reactionGroups { content viewerHasReacted reactors { totalCount } }
-              replies(first: 50) {
-                nodes {
-                  id body createdAt author { login avatarUrl }
-                  reactionGroups { content viewerHasReacted reactors { totalCount } }
-                }
-              }
-            }
+            nodes { ${COMMENT_FIELDS} }
           }
         }
       }
@@ -247,13 +296,19 @@ export async function gql(query: string, variables: Record<string, any>) {
   const { token } = useAuth()
   const t = token.value
   if (!t) return null
+
+  // Dev: inject rateLimit field to monitor API point consumption
+  const actualQuery = import.meta.env.DEV
+    ? query.replace(/\{/, '{ rateLimit { cost remaining resetAt }')
+    : query
+
   const resp = await fetch(GRAPHQL_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${t}`,
     },
-    body: JSON.stringify({ query, variables }),
+    body: JSON.stringify({ query: actualQuery, variables }),
   })
   if (resp.status === 403 || resp.status === 429) {
     console.warn('[GQL] GitHub API rate limit exceeded')
@@ -262,6 +317,10 @@ export async function gql(query: string, variables: Record<string, any>) {
   const json = await resp.json()
   if (json.errors) {
     console.warn('[GQL] GraphQL errors:', json.errors)
+  }
+  if (import.meta.env.DEV && json.data?.rateLimit) {
+    const rl = json.data.rateLimit
+    console.log(`[GQL] cost=${rl.cost} remaining=${rl.remaining} reset=${rl.resetAt}`)
   }
   return json.data
 }

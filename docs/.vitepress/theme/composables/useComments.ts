@@ -3,7 +3,6 @@ import { useAuth } from './useAuth'
 import {
   findDiscussionWithComments, createDiscussion,
   addDiscussionComment, addDiscussionReply,
-  invalidateDiscussionCache,
 } from './useGithubGql'
 import {
   type ReactionGroup, type ThreadReply,
@@ -32,6 +31,13 @@ let _discussionId: string | null = null
 let _loadPromise: Promise<void> | null = null
 let _loadingPath: string | null = null
 
+function storedDiscussionId(pagePath: string): string | null {
+  try { return sessionStorage.getItem(`disc::${CATEGORY_NAME}::${pagePath}`) } catch { return null }
+}
+function storeDiscussionId(pagePath: string, id: string) {
+  try { sessionStorage.setItem(`disc::${CATEGORY_NAME}::${pagePath}`, id) } catch {}
+}
+
 export function useComments() {
   const { token } = useAuth()
 
@@ -41,7 +47,6 @@ export function useComments() {
       // Force: wait for in-flight request, then re-fetch with current auth state
       await _loadPromise
     }
-    if (force) invalidateDiscussionCache(pagePath, CATEGORY_NAME)
     _loadingPath = pagePath
     _loadPromise = _doLoadComments(pagePath).finally(() => {
       _loadPromise = null
@@ -51,7 +56,7 @@ export function useComments() {
   }
 
   async function _doLoadComments(pagePath: string) {
-    const knownId = _discussionId
+    const knownId = _discussionId || storedDiscussionId(pagePath)
     comments.value = []
     loaded.value = false
     _discussionId = null
@@ -59,6 +64,7 @@ export function useComments() {
       const result = await findDiscussionWithComments(pagePath, CATEGORY_NAME, knownId)
       if (result) {
         _discussionId = result.discussionId
+        if (result.discussionId) storeDiscussionId(pagePath, result.discussionId)
         comments.value = result.comments.map((c: any) => ({
           id: c.id,
           body: c.body,
@@ -100,7 +106,6 @@ export function useComments() {
         reactions: mapReactions(newComment.reactionGroups),
       }]
     }
-    invalidateDiscussionCache(pagePath, CATEGORY_NAME)
   }
 
   async function replyToComment(pagePath: string, commentId: string, body: string) {
@@ -120,7 +125,6 @@ export function useComments() {
         parent.replies = [...parent.replies, mapReply(newReply)]
       }
     }
-    invalidateDiscussionCache(pagePath, CATEGORY_NAME)
   }
 
   const toggleReaction = createReactionToggler((subjectId) => {
