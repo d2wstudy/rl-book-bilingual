@@ -5,6 +5,24 @@ const REPO_NAME = 'rl-book-bilingual'
 const GRAPHQL_URL = 'https://api.github.com/graphql'
 const WORKER_URL = 'https://rl-book-auth.d2w.workers.dev'
 
+// --- Cache layer ---
+const CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+interface CacheEntry<T> {
+  data: T
+  ts: number
+}
+const _discussionCache = new Map<string, CacheEntry<any>>()
+const _inflightDiscussions = new Map<string, Promise<any>>()
+
+function cacheKey(pagePath: string, categoryName: string) {
+  return `${categoryName}::${pagePath}`
+}
+
+/** Invalidate cached discussion data for a page (call after mutations) */
+export function invalidateDiscussionCache(pagePath: string, categoryName: string) {
+  _discussionCache.delete(cacheKey(pagePath, categoryName))
+}
+
 // Shared category ID cache (Promise-based to deduplicate concurrent calls)
 let _categoriesPromise: Promise<Map<string, string>> | null = null
 
@@ -34,6 +52,35 @@ export async function getCategoryId(categoryName: string): Promise<string | null
 
 /** Find a discussion by title in a category AND fetch its comments */
 export async function findDiscussionWithComments(
+  pagePath: string,
+  categoryName: string,
+): Promise<{ discussionId: string | null; comments: any[] } | null> {
+  const key = cacheKey(pagePath, categoryName)
+
+  // Return cached data if fresh
+  const cached = _discussionCache.get(key)
+  if (cached && Date.now() - cached.ts < CACHE_TTL) {
+    return cached.data
+  }
+
+  // Deduplicate concurrent in-flight requests
+  const inflight = _inflightDiscussions.get(key)
+  if (inflight) return inflight
+
+  const promise = _fetchDiscussion(pagePath, categoryName)
+    .then((result) => {
+      _discussionCache.set(key, { data: result, ts: Date.now() })
+      return result
+    })
+    .finally(() => {
+      _inflightDiscussions.delete(key)
+    })
+
+  _inflightDiscussions.set(key, promise)
+  return promise
+}
+
+async function _fetchDiscussion(
   pagePath: string,
   categoryName: string,
 ): Promise<{ discussionId: string | null; comments: any[] } | null> {

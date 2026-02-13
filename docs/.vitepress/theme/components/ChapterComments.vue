@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, watch, computed } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { useRoute } from 'vitepress'
 import { useAuth } from '../composables/useAuth'
 import { useComments } from '../composables/useComments'
@@ -18,9 +18,13 @@ const totalCount = computed(() =>
   comments.value.reduce((sum, c) => sum + 1 + c.replies.length, 0)
 )
 
-onMounted(() => loadComments(route.path))
-watch(() => route.path, (path) => loadComments(path))
-watch(token, () => loadComments(route.path))
+// Single watcher with immediate: true replaces both onMounted + watch(route.path)
+watch(() => route.path, (path) => loadComments(path), { immediate: true })
+
+// Only reload on token change if data was already loaded (avoids double-load on init)
+watch(token, () => {
+  if (loaded.value) loadComments(route.path)
+})
 
 async function onSubmit(text: string) {
   submitting.value = true

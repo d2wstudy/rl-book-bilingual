@@ -3,6 +3,7 @@ import { useAuth } from './useAuth'
 import {
   findDiscussionWithComments, createDiscussion,
   addDiscussionComment, addDiscussionReply,
+  invalidateDiscussionCache,
 } from './useGithubGql'
 import {
   type ReactionGroup, type ThreadReply,
@@ -34,11 +35,24 @@ export interface AnnotationThread {
 const annotations = ref<Map<string, AnnotationThread[]>>(new Map())
 const loaded = ref(false)
 let _discussionId: string | null = null
+let _loadPromise: Promise<void> | null = null
+let _loadingPath: string | null = null
 
 export function useAnnotations() {
   const { token } = useAuth()
 
   async function loadAnnotations(pagePath: string) {
+    // Deduplicate: if already loading the same path, reuse the promise
+    if (_loadPromise && _loadingPath === pagePath) return _loadPromise
+    _loadingPath = pagePath
+    _loadPromise = _doLoadAnnotations(pagePath).finally(() => {
+      _loadPromise = null
+      _loadingPath = null
+    })
+    return _loadPromise
+  }
+
+  async function _doLoadAnnotations(pagePath: string) {
     try {
       const result = await findDiscussionWithComments(pagePath, CATEGORY_NAME)
       const map = new Map<string, AnnotationThread[]>()
@@ -114,12 +128,14 @@ export function useAnnotations() {
     })
 
     await addDiscussionComment(discussionId, body)
+    invalidateDiscussionCache(pagePath, CATEGORY_NAME)
     await loadAnnotations(pagePath)
   }
 
   async function replyToAnnotation(pagePath: string, threadId: string, body: string) {
     if (!token.value || !_discussionId) return
     await addDiscussionReply(_discussionId, threadId, body)
+    invalidateDiscussionCache(pagePath, CATEGORY_NAME)
     await loadAnnotations(pagePath)
   }
 

@@ -38,7 +38,6 @@ const drawerOpen = ref(false)
 const activeThreads = ref<AnnotationThread[]>([])
 
 onMounted(() => {
-  loadAnnotations(route.path)
   document.addEventListener('mouseup', onMouseUp)
   document.addEventListener('click', onDocClick)
 })
@@ -48,16 +47,20 @@ onUnmounted(() => {
   document.removeEventListener('click', onDocClick)
 })
 
+// Single watcher with immediate: true replaces both onMounted + watch(route.path)
 watch(() => route.path, (path) => {
   loadAnnotations(path)
   drawerOpen.value = false
-})
+}, { immediate: true })
 
-watch(token, () => loadAnnotations(route.path))
+// Only reload on token change if data was already loaded (avoids double-load on init)
+watch(token, () => {
+  if (loaded.value) loadAnnotations(route.path)
+})
 
 watch([loaded, annotations, () => route.path], () => {
   nextTick(renderAnnotations)
-}, { deep: true })
+})
 
 function onMouseUp(e: MouseEvent) {
   if (!user.value) return

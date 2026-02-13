@@ -3,6 +3,7 @@ import { useAuth } from './useAuth'
 import {
   findDiscussionWithComments, createDiscussion,
   addDiscussionComment, addDiscussionReply,
+  invalidateDiscussionCache,
 } from './useGithubGql'
 import {
   type ReactionGroup, type ThreadReply,
@@ -28,11 +29,24 @@ export interface Comment {
 const comments = ref<Comment[]>([])
 const loaded = ref(false)
 let _discussionId: string | null = null
+let _loadPromise: Promise<void> | null = null
+let _loadingPath: string | null = null
 
 export function useComments() {
   const { token } = useAuth()
 
   async function loadComments(pagePath: string) {
+    // Deduplicate: if already loading the same path, reuse the promise
+    if (_loadPromise && _loadingPath === pagePath) return _loadPromise
+    _loadingPath = pagePath
+    _loadPromise = _doLoadComments(pagePath).finally(() => {
+      _loadPromise = null
+      _loadingPath = null
+    })
+    return _loadPromise
+  }
+
+  async function _doLoadComments(pagePath: string) {
     comments.value = []
     loaded.value = false
     _discussionId = null
@@ -68,6 +82,7 @@ export function useComments() {
     if (!discussionId) return
 
     await addDiscussionComment(discussionId, body)
+    invalidateDiscussionCache(pagePath, CATEGORY_NAME)
     await loadComments(pagePath)
   }
 
@@ -81,6 +96,7 @@ export function useComments() {
     if (!discussionId) return
 
     await addDiscussionReply(discussionId, commentId, body)
+    invalidateDiscussionCache(pagePath, CATEGORY_NAME)
     await loadComments(pagePath)
   }
 
