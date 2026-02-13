@@ -42,11 +42,9 @@ export function useAuth() {
     if (revokePromise) {
       await revokePromise
     }
-    // Remember current page so we can return after OAuth
-    sessionStorage.setItem('gh-redirect', window.location.href)
-    // Always use site root as redirect_uri to match OAuth App config
-    // dev: http://localhost:5173/  prod: https://xxx.github.io/rl-book-bilingual/
-    const callbackUrl = window.location.origin + import.meta.env.BASE_URL
+    // Use current page as redirect_uri so GitHub calls back here directly
+    // (GitHub allows any sub-path under the registered callback URL)
+    const callbackUrl = window.location.origin + window.location.pathname
     const url = `https://github.com/login/oauth/authorize?client_id=${GITHUB_CLIENT_ID}&scope=public_repo&redirect_uri=${encodeURIComponent(callbackUrl)}`
     window.location.href = url
   }
@@ -71,7 +69,8 @@ export function useAuth() {
 
   async function exchangeCode(code: string) {
     loading.value = true
-    const redirect_uri = window.location.origin + import.meta.env.BASE_URL
+    // Must match the redirect_uri sent in login() — which is the current page
+    const redirect_uri = window.location.origin + window.location.pathname
     try {
       const resp = await fetch(`${WORKER_URL}/api/auth`, {
         method: 'POST',
@@ -82,13 +81,8 @@ export function useAuth() {
       if (data.access_token) {
         token.value = data.access_token
         localStorage.setItem('gh-token', data.access_token)
+        // Already on the correct page — just fetch user info
         await fetchUser()
-        // Redirect back to the page where user clicked login
-        const redirect = sessionStorage.getItem('gh-redirect')
-        if (redirect) {
-          sessionStorage.removeItem('gh-redirect')
-          window.location.href = redirect
-        }
       } else {
         console.error('[auth] token exchange failed:', data)
       }
