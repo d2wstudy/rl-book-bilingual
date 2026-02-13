@@ -1,6 +1,15 @@
 import { useAuth } from './useAuth'
 import { addReaction, removeReaction } from './useGithubGql'
 
+// ---- Canonical reaction order (matches picker UI) ----
+
+const REACTION_ORDER = ['THUMBS_UP', 'THUMBS_DOWN', 'HEART', 'LAUGH', 'HOORAY', 'ROCKET', 'EYES']
+const REACTION_INDEX = Object.fromEntries(REACTION_ORDER.map((k, i) => [k, i]))
+
+function sortReactions(reactions: ReactionGroup[]): ReactionGroup[] {
+  return reactions.sort((a, b) => (REACTION_INDEX[a.content] ?? 99) - (REACTION_INDEX[b.content] ?? 99))
+}
+
 // ---- Shared types ----
 
 export interface ReactionGroup {
@@ -22,13 +31,15 @@ export interface ThreadReply {
 
 export function mapReactions(groups: any[]): ReactionGroup[] {
   if (!groups) return []
-  return groups
-    .map((g: any) => ({
-      content: g.content,
-      count: g.reactors?.totalCount ?? g.users?.totalCount ?? 0,
-      viewerHasReacted: g.viewerHasReacted ?? false,
-    }))
-    .filter((g: ReactionGroup) => g.count > 0 || g.viewerHasReacted)
+  return sortReactions(
+    groups
+      .map((g: any) => ({
+        content: g.content,
+        count: g.reactors?.totalCount ?? g.users?.totalCount ?? 0,
+        viewerHasReacted: g.viewerHasReacted ?? false,
+      }))
+      .filter((g: ReactionGroup) => g.count > 0 || g.viewerHasReacted)
+  )
 }
 
 export function mapReply(r: any): ThreadReply {
@@ -70,6 +81,7 @@ export function createReactionToggler(
       return { delta: 1 }
     } else {
       target.reactions.push({ content, count: 1, viewerHasReacted: true })
+      sortReactions(target.reactions)
       await addReaction(subjectId, content)
       return { delta: 1 }
     }
