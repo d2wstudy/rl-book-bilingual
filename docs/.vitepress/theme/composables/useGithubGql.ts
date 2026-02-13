@@ -81,9 +81,11 @@ async function fetchViaProxy(
 }
 
 /** Purge Worker cache for a specific page + category (call after write operations).
- *  Sends user token so Worker can also purge per-user reaction cache. */
-export async function purgeWorkerCache(pagePath: string, categoryName: string) {
+ *  Sends user token so Worker can also purge per-user reaction cache.
+ *  Pass userOnly=true for reaction toggles (skip shared cache purge). */
+export async function purgeWorkerCache(pagePath: string, categoryName: string, userOnly = false) {
   const params = new URLSearchParams({ path: pagePath, category: categoryName })
+  if (userOnly) params.set('user_only', '1')
   const headers: Record<string, string> = {}
   const { token } = useAuth()
   if (token.value) {

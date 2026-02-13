@@ -234,10 +234,6 @@ async function handleDiscussions(request, url, env, corsHeaders) {
 
   const authHeader = request.headers.get('Authorization')
   const userToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
-  const effectiveToken = userToken || env.GITHUB_PAT
-  if (!effectiveToken) {
-    return Response.json({ error: 'Server not configured' }, { status: 500, headers: corsHeaders })
-  }
 
   const cache = caches.default
   const cacheKey = buildCacheKey(url)
@@ -249,17 +245,24 @@ async function handleDiscussions(request, url, env, corsHeaders) {
   if (cached) {
     console.log(`[CACHE HIT] ${categoryName} | ${pagePath}`)
     result = await cached.json()
-  } else {
-    console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — fetching from GitHub`)
-    result = await fetchDiscussion(effectiveToken, pagePath, categoryName, knownId)
-    fetchedWithUserToken = !!userToken
+  } else if (userToken) {
+    // Authenticated user populates shared cache (implicit token pool)
+    console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — fetching with user token`)
+    result = await fetchDiscussion(userToken, pagePath, categoryName, knownId)
+    fetchedWithUserToken = true
     console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — found: ${!!result.discussionId}`)
 
-    // Populate shared cache
-    const sharedResp = Response.json(result, {
+    // Populate shared cache (strip viewerHasReacted before caching)
+    const sharedResult = JSON.parse(JSON.stringify(result))
+    if (sharedResult.comments?.length) overlayReactions(sharedResult.comments, {})
+    const sharedResp = Response.json(sharedResult, {
       headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` },
     })
     await cache.put(cacheKey, sharedResp)
+  } else {
+    // Unauthenticated user, cache miss — return empty, next auth user will populate
+    console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — no token, returning empty`)
+    result = { discussionId: null, comments: [] }
   }
 
   // Per-user reaction overlay for authenticated users;
@@ -306,16 +309,22 @@ async function handleDiscussions(request, url, env, corsHeaders) {
 async function handleCachePurge(request, url, corsHeaders) {
   const pagePath = url.searchParams.get('path')
   const categoryName = url.searchParams.get('category')
+  const userOnly = url.searchParams.get('user_only') === '1'
   if (!pagePath || !categoryName) {
     return Response.json({ error: 'Missing path or category' }, { status: 400, headers: corsHeaders })
   }
 
   const cache = caches.default
-  const cacheKey = buildCacheKey(url)
-  const deleted = await cache.delete(cacheKey)
-  console.log(`[CACHE PURGE] ${categoryName} | ${pagePath} — shared: ${deleted}`)
+  let deleted = false
 
-  // Also purge per-user reaction cache if token provided
+  // Only purge shared cache for structural changes (new comments/replies), not reactions
+  if (!userOnly) {
+    const cacheKey = buildCacheKey(url)
+    deleted = await cache.delete(cacheKey)
+    console.log(`[CACHE PURGE] ${categoryName} | ${pagePath} — shared: ${deleted}`)
+  }
+
+  // Always purge per-user reaction cache if token provided
   const authHeader = request.headers.get('Authorization')
   const userToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
   let userDeleted = false
