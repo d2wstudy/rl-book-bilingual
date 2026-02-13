@@ -342,10 +342,42 @@ async function handleDiscussions(request, url, env, corsHeaders) {
   })
 }
 
+/** Update totalCount for a specific reaction on a subject in the comments array.
+ *  Returns true if the target was found and updated. */
+function updateReactionCount(comments, subjectId, reaction, delta) {
+  for (const c of comments || []) {
+    if (patchNode(c, subjectId, reaction, delta)) return true
+    for (const r of c.replies?.nodes || []) {
+      if (patchNode(r, subjectId, reaction, delta)) return true
+    }
+  }
+  return false
+}
+
+function patchNode(node, subjectId, reaction, delta) {
+  if (node.id !== subjectId) return false
+  const group = (node.reactionGroups || []).find(g => g.content === reaction)
+  if (group) {
+    group.reactors.totalCount = Math.max(0, group.reactors.totalCount + delta)
+  } else if (delta > 0) {
+    // New reaction type — add a group
+    node.reactionGroups = node.reactionGroups || []
+    node.reactionGroups.push({
+      content: reaction,
+      viewerHasReacted: false,
+      reactors: { totalCount: delta },
+    })
+  }
+  return true
+}
+
 async function handleCachePurge(request, url, corsHeaders) {
   const pagePath = url.searchParams.get('path')
   const categoryName = url.searchParams.get('category')
   const userOnly = url.searchParams.get('user_only') === '1'
+  const subjectId = url.searchParams.get('subject_id')
+  const reaction = url.searchParams.get('reaction')
+  const delta = parseInt(url.searchParams.get('delta') || '0', 10)
   if (!pagePath || !categoryName) {
     return Response.json({ error: 'Missing path or category' }, { status: 400, headers: corsHeaders })
   }
@@ -358,6 +390,22 @@ async function handleCachePurge(request, url, corsHeaders) {
     const cacheKey = buildCacheKey(url)
     deleted = await cache.delete(cacheKey)
     console.log(`[CACHE PURGE] ${categoryName} | ${pagePath} — shared: ${deleted}`)
+  }
+
+  // In-place update of shared cache totalCount for reaction toggles
+  if (subjectId && reaction && delta) {
+    const cacheKey = buildCacheKey(url)
+    const cached = await cache.match(cacheKey)
+    if (cached) {
+      const data = await cached.json()
+      if (updateReactionCount(data.comments, subjectId, reaction, delta)) {
+        const updated = Response.json(data, {
+          headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` },
+        })
+        await cache.put(cacheKey, updated)
+        console.log(`[CACHE PATCH] ${categoryName} | ${pagePath} — ${reaction} ${delta > 0 ? '+' : ''}${delta} on ${subjectId}`)
+      }
+    }
   }
 
   // Always purge per-user reaction cache if token provided

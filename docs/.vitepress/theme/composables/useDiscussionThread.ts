@@ -49,7 +49,7 @@ export function createReactionToggler(
 ) {
   const { token } = useAuth()
 
-  return async function toggleReaction(subjectId: string, content: string) {
+  return async function toggleReaction(subjectId: string, content: string): Promise<{ delta: number } | undefined> {
     if (!token.value) return
     const target = findTarget(subjectId)
     if (!target) return
@@ -62,13 +62,16 @@ export function createReactionToggler(
         target.reactions.splice(target.reactions.indexOf(existing), 1)
       }
       await removeReaction(subjectId, content)
+      return { delta: -1 }
     } else if (existing) {
       existing.count++
       existing.viewerHasReacted = true
       await addReaction(subjectId, content)
+      return { delta: 1 }
     } else {
       target.reactions.push({ content, count: 1, viewerHasReacted: true })
       await addReaction(subjectId, content)
+      return { delta: 1 }
     }
   }
 }

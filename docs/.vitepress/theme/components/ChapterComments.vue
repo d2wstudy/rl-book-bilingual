@@ -42,8 +42,9 @@ async function onReply(commentId: string, body: string) {
 }
 
 async function onReact(subjectId: string, content: string) {
-  await toggleReaction(subjectId, content)
-  await purgeWorkerCache(route.path, 'Announcements', true)
+  const result = await toggleReaction(subjectId, content)
+  await purgeWorkerCache(route.path, 'Announcements', true,
+    result ? { subjectId, content, delta: result.delta } : undefined)
 }
 </script>
 
