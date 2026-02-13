@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vitepress'
 import { useAuth } from '../composables/useAuth'
 import { useAnnotations, type AnnotationThread } from '../composables/useAnnotations'
+import { purgeWorkerCache } from '../composables/useGithubGql'
 import { captureSelector, resolveSelector, type ResolvedRange } from '../composables/useTextAnchor'
 import NoteBubble from './NoteBubble.vue'
 import NoteEditor from './NoteEditor.vue'
@@ -165,6 +166,7 @@ async function onDrawerReply(threadId: string, body: string) {
 
 async function onDrawerReact(subjectId: string, content: string) {
   await toggleReaction(subjectId, content)
+  purgeWorkerCache(route.path, 'Notes')
 }
 
 async function onDrawerAddNote(text: string) {

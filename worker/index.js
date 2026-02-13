@@ -1,4 +1,4 @@
-// Cloudflare Worker: GitHub OAuth proxy + Discussions read proxy
+// Cloudflare Worker: GitHub OAuth proxy + Discussions read proxy with shared cache
 // Deploy: npx wrangler deploy
 //
 // Environment variables (set via wrangler secret):
@@ -12,12 +12,23 @@ const REPO_OWNER = 'd2wstudy'
 const REPO_NAME = 'rl-book-bilingual'
 const CACHE_TTL = 300 // 5 minutes
 
+const COMMENT_FIELDS = `
+  id body createdAt author { login avatarUrl }
+  reactionGroups { content viewerHasReacted reactors { totalCount } }
+  replies(first: 50) {
+    nodes {
+      id body createdAt author { login avatarUrl }
+      reactionGroups { content viewerHasReacted reactors { totalCount } }
+    }
+  }
+`
+
 export default {
   async fetch(request, env) {
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     }
 
     if (request.method === 'OPTIONS') {
@@ -26,9 +37,14 @@ export default {
 
     const url = new URL(request.url)
 
-    // GET /api/discussions?path=xxx&category=Notes
+    // GET /api/discussions?path=xxx&category=Notes[&id=xxx]
     if (url.pathname === '/api/discussions' && request.method === 'GET') {
-      return handleDiscussions(url, env, corsHeaders)
+      return handleDiscussions(request, url, env, corsHeaders)
+    }
+
+    // POST /api/cache/purge?path=xxx&category=Notes
+    if (url.pathname === '/api/cache/purge' && request.method === 'POST') {
+      return handleCachePurge(url, corsHeaders)
     }
 
     if (request.method !== 'POST') {
@@ -106,20 +122,35 @@ export default {
   },
 }
 
-async function handleDiscussions(url, env, corsHeaders) {
+/** Build a normalized cache key using only path + category (ignoring id param and auth) */
+function buildCacheKey(url) {
   const pagePath = url.searchParams.get('path')
   const categoryName = url.searchParams.get('category')
+  const normalized = new URL(url.origin + '/api/discussions')
+  normalized.searchParams.set('path', pagePath)
+  normalized.searchParams.set('category', categoryName)
+  return new Request(normalized.toString(), { method: 'GET' })
+}
+
+async function handleDiscussions(request, url, env, corsHeaders) {
+  const pagePath = url.searchParams.get('path')
+  const categoryName = url.searchParams.get('category')
+  const knownId = url.searchParams.get('id') // optional: cheaper node() query
   if (!pagePath || !categoryName) {
     return Response.json({ error: 'Missing path or category' }, { status: 400, headers: corsHeaders })
   }
 
-  if (!env.GITHUB_PAT) {
+  // Use user's token if provided, fall back to PAT
+  const authHeader = request.headers.get('Authorization')
+  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
+  const effectiveToken = token || env.GITHUB_PAT
+  if (!effectiveToken) {
     return Response.json({ error: 'Server not configured' }, { status: 500, headers: corsHeaders })
   }
 
-  // Check cache
+  // Check cache (normalized key: path + category only)
   const cache = caches.default
-  const cacheKey = new Request(url.toString(), { method: 'GET' })
+  const cacheKey = buildCacheKey(url)
   const cached = await cache.match(cacheKey)
   if (cached) {
     console.log(`[CACHE HIT] ${categoryName} | ${pagePath}`)
@@ -131,40 +162,43 @@ async function handleDiscussions(url, env, corsHeaders) {
 
   console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — fetching from GitHub`)
 
-  // Use search query to find the exact discussion by title + category
-  // This is far cheaper than fetching all discussions: 1 result vs 50
-  const searchQuery = `repo:${REPO_OWNER}/${REPO_NAME} in:title ${JSON.stringify(pagePath)} category:${JSON.stringify(categoryName)}`
-  const data = await githubGql(env.GITHUB_PAT, `query($q: String!) {
-    search(query: $q, type: DISCUSSION, first: 3) {
-      nodes {
+  let result
+  if (knownId) {
+    // Cheaper node() query when discussion ID is known (~51 points vs ~153)
+    const data = await githubGql(effectiveToken, `query($id: ID!) {
+      node(id: $id) {
         ... on Discussion {
           id
-          title
-          comments(first: 100) {
-            nodes {
-              id body createdAt author { login avatarUrl }
-              reactionGroups { content reactors { totalCount } }
-              replies(first: 50) {
-                nodes {
-                  id body createdAt author { login avatarUrl }
-                  reactionGroups { content reactors { totalCount } }
-                }
-              }
-            }
+          comments(first: 100) { nodes { ${COMMENT_FIELDS} } }
+        }
+      }
+    }`, { id: knownId })
+    const node = data?.node
+    result = node
+      ? { discussionId: node.id, comments: node.comments.nodes }
+      : { discussionId: null, comments: [] }
+  } else {
+    // Search query when discussion ID is unknown
+    const searchQuery = `repo:${REPO_OWNER}/${REPO_NAME} in:title ${JSON.stringify(pagePath)} category:${JSON.stringify(categoryName)}`
+    const data = await githubGql(effectiveToken, `query($q: String!) {
+      search(query: $q, type: DISCUSSION, first: 3) {
+        nodes {
+          ... on Discussion {
+            id
+            title
+            comments(first: 100) { nodes { ${COMMENT_FIELDS} } }
           }
         }
       }
-    }
-  }`, { q: searchQuery })
+    }`, { q: searchQuery })
+    const nodes = data?.search?.nodes || []
+    const match = nodes.find(n => n.title === pagePath)
+    result = match
+      ? { discussionId: match.id, comments: match.comments.nodes }
+      : { discussionId: null, comments: [] }
+  }
 
-  const nodes = data?.search?.nodes || []
-  const match = nodes.find(n => n.title === pagePath)
-
-  const result = match
-    ? { discussionId: match.id, comments: match.comments.nodes }
-    : { discussionId: null, comments: [] }
-
-  console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — found: ${!!match}`)
+  console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — found: ${!!result.discussionId}`)
 
   // Cache the response
   const response = Response.json(result, {
@@ -176,6 +210,20 @@ async function handleDiscussions(url, env, corsHeaders) {
   })
   await cache.put(cacheKey, response.clone())
   return response
+}
+
+async function handleCachePurge(url, corsHeaders) {
+  const pagePath = url.searchParams.get('path')
+  const categoryName = url.searchParams.get('category')
+  if (!pagePath || !categoryName) {
+    return Response.json({ error: 'Missing path or category' }, { status: 400, headers: corsHeaders })
+  }
+
+  const cache = caches.default
+  const cacheKey = buildCacheKey(url)
+  const deleted = await cache.delete(cacheKey)
+  console.log(`[CACHE PURGE] ${categoryName} | ${pagePath} — deleted: ${deleted}`)
+  return Response.json({ ok: true, deleted }, { headers: corsHeaders })
 }
 
 async function githubGql(token, query, variables) {

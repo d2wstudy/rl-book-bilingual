@@ -3,6 +3,7 @@ import { useAuth } from './useAuth'
 import {
   findDiscussionWithComments, createDiscussion,
   addDiscussionComment, addDiscussionReply,
+  purgeWorkerCache,
 } from './useGithubGql'
 import {
   type ReactionGroup, type ThreadReply,
@@ -156,9 +157,10 @@ export function useAnnotations() {
       map.set(paragraphId, list)
       annotations.value = map
     }
+    purgeWorkerCache(pagePath, CATEGORY_NAME)
   }
 
-  async function replyToAnnotation(_pagePath: string, threadId: string, body: string) {
+  async function replyToAnnotation(pagePath: string, threadId: string, body: string) {
     if (!token.value || !_discussionId) return
     const newReply = await addDiscussionReply(_discussionId, threadId, body)
     if (newReply) {
@@ -171,6 +173,7 @@ export function useAnnotations() {
         }
       }
     }
+    purgeWorkerCache(pagePath, CATEGORY_NAME)
   }
 
   const toggleReaction = createReactionToggler((subjectId) => {

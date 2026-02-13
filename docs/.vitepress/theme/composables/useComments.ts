@@ -3,6 +3,7 @@ import { useAuth } from './useAuth'
 import {
   findDiscussionWithComments, createDiscussion,
   addDiscussionComment, addDiscussionReply,
+  purgeWorkerCache,
 } from './useGithubGql'
 import {
   type ReactionGroup, type ThreadReply,
@@ -106,6 +107,7 @@ export function useComments() {
         reactions: mapReactions(newComment.reactionGroups),
       }]
     }
+    purgeWorkerCache(pagePath, CATEGORY_NAME)
   }
 
   async function replyToComment(pagePath: string, commentId: string, body: string) {
@@ -125,6 +127,7 @@ export function useComments() {
         parent.replies = [...parent.replies, mapReply(newReply)]
       }
     }
+    purgeWorkerCache(pagePath, CATEGORY_NAME)
   }
 
   const toggleReaction = createReactionToggler((subjectId) => {

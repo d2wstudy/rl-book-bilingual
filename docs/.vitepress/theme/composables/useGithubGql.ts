@@ -5,95 +5,8 @@ const REPO_NAME = 'rl-book-bilingual'
 const GRAPHQL_URL = 'https://api.github.com/graphql'
 const WORKER_URL = 'https://rl-book-auth.d2w.workers.dev'
 
-// --- Deduplication layer (no TTL cache — always fetch fresh data) ---
+// --- Deduplication layer ---
 const _inflightDiscussions = new Map<string, Promise<any>>()
-
-// --- Microtask batch queue (combines multiple category fetches into one GraphQL call) ---
-interface BatchRequest {
-  pagePath: string
-  categoryName: string
-  knownId: string | null
-  resolve: (result: { discussionId: string | null; comments: any[] } | null) => void
-  reject: (err: any) => void
-}
-let _batchQueue: BatchRequest[] = []
-let _batchScheduled = false
-
-const COMMENT_FIELDS = `
-  id body createdAt author { login avatarUrl }
-  reactionGroups { content viewerHasReacted reactors { totalCount } }
-  replies(first: 50) {
-    nodes {
-      id body createdAt author { login avatarUrl }
-      reactionGroups { content viewerHasReacted reactors { totalCount } }
-    }
-  }
-`
-
-function scheduleBatch() {
-  if (!_batchScheduled) {
-    _batchScheduled = true
-    Promise.resolve().then(processBatch)
-  }
-}
-
-async function processBatch() {
-  const queue = _batchQueue
-  _batchQueue = []
-  _batchScheduled = false
-  if (queue.length === 0) return
-
-  // Single request — skip dynamic query building
-  if (queue.length === 1) {
-    const req = queue[0]
-    try {
-      const result = req.knownId
-        ? await fetchDiscussionById(req.knownId)
-        : await fetchDirectFromGitHub(req.pagePath, req.categoryName)
-      req.resolve(result)
-    } catch (err) { req.reject(err) }
-    return
-  }
-
-  // Build a single batched GraphQL query with aliases
-  const varDefs: string[] = []
-  const queryParts: string[] = []
-  const variables: Record<string, any> = {}
-
-  for (let i = 0; i < queue.length; i++) {
-    const req = queue[i]
-    if (req.knownId) {
-      varDefs.push(`$id${i}: ID!`)
-      variables[`id${i}`] = req.knownId
-      queryParts.push(`d${i}: node(id: $id${i}) { ... on Discussion { id comments(first: 100) { nodes { ${COMMENT_FIELDS} } } } }`)
-    } else {
-      const searchQuery = `repo:${REPO_OWNER}/${REPO_NAME} in:title ${JSON.stringify(req.pagePath)} category:${JSON.stringify(req.categoryName)}`
-      varDefs.push(`$q${i}: String!`)
-      variables[`q${i}`] = searchQuery
-      queryParts.push(`d${i}: search(query: $q${i}, type: DISCUSSION, first: 3) { nodes { ... on Discussion { id title comments(first: 100) { nodes { ${COMMENT_FIELDS} } } } } }`)
-    }
-  }
-
-  try {
-    const data = await gql(`query(${varDefs.join(', ')}) {\n${queryParts.join('\n')}\n}`, variables)
-
-    for (let i = 0; i < queue.length; i++) {
-      const req = queue[i]
-      const raw = data?.[`d${i}`]
-      if (req.knownId) {
-        req.resolve(raw ? { discussionId: raw.id, comments: raw.comments.nodes } : null)
-      } else {
-        const nodes = raw?.nodes || []
-        const match = nodes.find((n: any) => n.title === req.pagePath)
-        req.resolve(match
-          ? { discussionId: match.id, comments: match.comments.nodes }
-          : { discussionId: null, comments: [] })
-      }
-    }
-  } catch (err) {
-    for (const req of queue) req.reject(err)
-  }
-}
 
 // Shared category ID cache (Promise-based to deduplicate concurrent calls)
 let _categoriesPromise: Promise<Map<string, string>> | null = null
@@ -123,8 +36,8 @@ export async function getCategoryId(categoryName: string): Promise<string | null
 }
 
 /** Find a discussion by title in a category AND fetch its comments.
- *  Authenticated users: batched via microtask queue (multiple categories merged into one API call).
- *  Unauthenticated users: fetched via Worker proxy. */
+ *  All requests go through Worker proxy (shared cache across users).
+ *  Authenticated users pass their token; unauthenticated fall back to PAT. */
 export async function findDiscussionWithComments(
   pagePath: string,
   categoryName: string,
@@ -136,94 +49,41 @@ export async function findDiscussionWithComments(
   const inflight = _inflightDiscussions.get(key)
   if (inflight) return inflight
 
-  const { token } = useAuth()
-
-  let promise: Promise<{ discussionId: string | null; comments: any[] } | null>
-
-  if (!token.value) {
-    // Unauthenticated: use Worker proxy
-    promise = fetchViaProxy(pagePath, categoryName)
-  } else {
-    // Authenticated: enqueue for microtask batching
-    promise = new Promise((resolve, reject) => {
-      _batchQueue.push({
-        pagePath,
-        categoryName,
-        knownId: knownDiscussionId ?? null,
-        resolve,
-        reject,
-      })
-      scheduleBatch()
-    })
-  }
-
+  const promise = fetchViaProxy(pagePath, categoryName, knownDiscussionId)
   _inflightDiscussions.set(key, promise)
   promise.finally(() => _inflightDiscussions.delete(key))
   return promise
 }
 
-/** Fetch a known discussion by its node ID (cheaper than search) */
-async function fetchDiscussionById(
-  discussionId: string,
-): Promise<{ discussionId: string; comments: any[] } | null> {
-  const data = await gql(`query($id: ID!) {
-    node(id: $id) {
-      ... on Discussion {
-        id
-        comments(first: 100) {
-          nodes { ${COMMENT_FIELDS} }
-        }
-      }
-    }
-  }`, { id: discussionId })
-
-  const node = data?.node
-  return node
-    ? { discussionId: node.id, comments: node.comments.nodes }
-    : null
-}
-
-/** Direct GitHub GraphQL fetch using the user's own token */
-async function fetchDirectFromGitHub(
-  pagePath: string,
-  categoryName: string,
-): Promise<{ discussionId: string | null; comments: any[] } | null> {
-  const searchQuery = `repo:${REPO_OWNER}/${REPO_NAME} in:title ${JSON.stringify(pagePath)} category:${JSON.stringify(categoryName)}`
-  const data = await gql(`query($q: String!) {
-    search(query: $q, type: DISCUSSION, first: 3) {
-      nodes {
-        ... on Discussion {
-          id
-          title
-          comments(first: 100) {
-            nodes { ${COMMENT_FIELDS} }
-          }
-        }
-      }
-    }
-  }`, { q: searchQuery })
-
-  const nodes = data?.search?.nodes || []
-  const match = nodes.find((n: any) => n.title === pagePath)
-  return match
-    ? { discussionId: match.id, comments: match.comments.nodes }
-    : { discussionId: null, comments: [] }
-}
-
-/** Read-only proxy via Cloudflare Worker (for unauthenticated users) */
+/** Fetch discussions via Worker proxy (shared cache, uses user token if available) */
 async function fetchViaProxy(
   pagePath: string,
   categoryName: string,
+  knownDiscussionId?: string | null,
 ): Promise<{ discussionId: string | null; comments: any[] } | null> {
   try {
     const params = new URLSearchParams({ path: pagePath, category: categoryName })
-    const resp = await fetch(`${WORKER_URL}/api/discussions?${params}`)
+    if (knownDiscussionId) params.set('id', knownDiscussionId)
+
+    const headers: Record<string, string> = {}
+    const { token } = useAuth()
+    if (token.value) {
+      headers['Authorization'] = `Bearer ${token.value}`
+    }
+
+    const resp = await fetch(`${WORKER_URL}/api/discussions?${params}`, { headers })
     if (!resp.ok) return null
     return await resp.json()
   } catch {
     console.warn('[GQL] Worker proxy request failed')
     return null
   }
+}
+
+/** Purge Worker cache for a specific page + category (call after write operations) */
+export function purgeWorkerCache(pagePath: string, categoryName: string) {
+  const params = new URLSearchParams({ path: pagePath, category: categoryName })
+  fetch(`${WORKER_URL}/api/cache/purge?${params}`, { method: 'POST' }).catch(() => {})
 }
 
 /** Create a new discussion in a category */
@@ -291,7 +151,7 @@ export async function addDiscussionReply(discussionId: string, replyToId: string
   return data?.addDiscussionComment?.comment || null
 }
 
-/** Shared GraphQL helper (requires auth) */
+/** Shared GraphQL helper — used for mutations only (reads go through Worker proxy) */
 export async function gql(query: string, variables: Record<string, any>) {
   const { token } = useAuth()
   const t = token.value
