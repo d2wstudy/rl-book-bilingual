@@ -8,30 +8,32 @@ const WORKER_URL = 'https://rl-book-auth.d2w.workers.dev'
 // --- Deduplication layer ---
 const _inflightDiscussions = new Map<string, Promise<any>>()
 
-// Shared category ID cache (Promise-based to deduplicate concurrent calls)
-let _categoriesPromise: Promise<Map<string, string>> | null = null
+// Shared repo metadata cache (Promise-based to deduplicate concurrent calls)
+let _repoMetaPromise: Promise<{ repoId: string; categories: Map<string, string> }> | null = null
 
-async function fetchCategories(): Promise<Map<string, string>> {
+async function fetchRepoMeta(): Promise<{ repoId: string; categories: Map<string, string> }> {
   const data = await gql(`query($owner: String!, $name: String!) {
     repository(owner: $owner, name: $name) {
+      id
       discussionCategories(first: 20) { nodes { id name } }
     }
   }`, { owner: REPO_OWNER, name: REPO_NAME })
-  const map = new Map<string, string>()
+  const categories = new Map<string, string>()
   for (const c of data?.repository?.discussionCategories?.nodes || []) {
-    map.set(c.name, c.id)
+    categories.set(c.name, c.id)
   }
-  return map
+  return { repoId: data?.repository?.id, categories }
+}
+
+function getRepoMeta() {
+  if (!_repoMetaPromise) _repoMetaPromise = fetchRepoMeta()
+  return _repoMetaPromise
 }
 
 export async function getCategoryId(categoryName: string): Promise<string | null> {
   const { token } = useAuth()
   if (!token.value) return null
-
-  if (!_categoriesPromise) {
-    _categoriesPromise = fetchCategories()
-  }
-  const categories = await _categoriesPromise
+  const { categories } = await getRepoMeta()
   return categories.get(categoryName) || null
 }
 
@@ -98,14 +100,11 @@ export async function purgeWorkerCache(pagePath: string, categoryName: string, u
 
 /** Create a new discussion in a category */
 export async function createDiscussion(pagePath: string, categoryName: string, bodyText: string): Promise<string | null> {
-  const categoryId = await getCategoryId(categoryName)
-  if (!categoryId) return null
-
-  const repoData = await gql(`query($owner: String!, $name: String!) {
-    repository(owner: $owner, name: $name) { id }
-  }`, { owner: REPO_OWNER, name: REPO_NAME })
-  const repoId = repoData?.repository?.id
-  if (!repoId) return null
+  const { token } = useAuth()
+  if (!token.value) return null
+  const { repoId, categories } = await getRepoMeta()
+  const categoryId = categories.get(categoryName)
+  if (!repoId || !categoryId) return null
 
   const result = await gql(`mutation($repoId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
     createDiscussion(input: { repositoryId: $repoId, categoryId: $categoryId, title: $title, body: $body }) {

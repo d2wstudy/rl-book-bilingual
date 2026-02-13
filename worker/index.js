@@ -190,6 +190,43 @@ function overlayReactions(comments, reactionMap) {
   }
 }
 
+/** Collect all comment + reply IDs from a comments array */
+function collectSubjectIds(comments) {
+  const ids = []
+  for (const c of comments) {
+    ids.push(c.id)
+    for (const r of c.replies?.nodes || []) {
+      ids.push(r.id)
+    }
+  }
+  return ids
+}
+
+/** Lightweight query: fetch only viewerHasReacted for a batch of subject IDs.
+ *  Returns reaction map: { subjectId: { CONTENT: true } } */
+async function fetchUserReactions(token, subjectIds) {
+  if (!subjectIds.length) return {}
+  const data = await githubGql(token, `query($ids: [ID!]!) {
+    nodes(ids: $ids) {
+      ... on DiscussionComment {
+        id
+        reactionGroups { content viewerHasReacted }
+      }
+    }
+  }`, { ids: subjectIds })
+  const map = {}
+  for (const node of data?.nodes || []) {
+    if (!node?.id) continue
+    for (const g of node.reactionGroups || []) {
+      if (g.viewerHasReacted) {
+        if (!map[node.id]) map[node.id] = {}
+        map[node.id][g.content] = true
+      }
+    }
+  }
+  return map
+}
+
 /** Fetch discussion from GitHub (reusable for both shared and per-user queries) */
 async function fetchDiscussion(token, pagePath, categoryName, knownId) {
   if (knownId) {
@@ -286,12 +323,11 @@ async function handleDiscussions(request, url, env, corsHeaders) {
       }))
       console.log(`[USER CACHE SET] ${categoryName} | ${pagePath}`)
     } else {
-      // Shared cache hit but no per-user data — fetch with user's token (~51 pts)
-      const discId = result.discussionId
-      if (discId) {
-        console.log(`[USER CACHE MISS] ${categoryName} | ${pagePath} — fetching reactions`)
-        const userData = await fetchDiscussion(userToken, pagePath, categoryName, discId)
-        const reactionMap = extractReactions(userData.comments || [])
+      // Shared cache hit but no per-user data — lightweight batch query for reactions only
+      const subjectIds = collectSubjectIds(result.comments)
+      if (subjectIds.length) {
+        console.log(`[USER CACHE MISS] ${categoryName} | ${pagePath} — fetching reactions (${subjectIds.length} subjects)`)
+        const reactionMap = await fetchUserReactions(userToken, subjectIds)
         overlayReactions(result.comments, reactionMap)
         await cache.put(userCacheKey, Response.json(reactionMap, {
           headers: { 'Cache-Control': `public, max-age=${USER_REACTION_TTL}` },
