@@ -17,7 +17,7 @@ const emit = defineEmits<{
   'add-note': [text: string]
 }>()
 
-const { user } = useAuth()
+const { user, login } = useAuth()
 
 const quoteText = computed(() => {
   if (!props.threads.length) return ''
@@ -88,6 +88,14 @@ function onAddNote(text: string) {
               @submit="onAddNote"
               @cancel="emit('close')"
             />
+          </div>
+          <div v-else class="drawer-footer drawer-login-footer">
+            <button class="drawer-login-btn" @click="login()">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/>
+              </svg>
+              登录 GitHub 后参与讨论
+            </button>
           </div>
         </div>
       </div>
@@ -196,6 +204,30 @@ function onAddNote(text: string) {
   flex-shrink: 0;
   padding: 12px 16px;
   border-top: 1px solid var(--vp-c-divider);
+}
+
+.drawer-login-footer {
+  display: flex;
+  justify-content: center;
+}
+
+.drawer-login-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+  background: var(--vp-c-bg-soft);
+  color: var(--vp-c-text-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.drawer-login-btn:hover {
+  color: var(--vp-c-brand-1);
+  border-color: var(--vp-c-brand-1);
 }
 
 /* Slide animation */

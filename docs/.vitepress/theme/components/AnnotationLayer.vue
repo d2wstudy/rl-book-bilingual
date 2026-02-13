@@ -9,7 +9,7 @@ import NoteBubble from './NoteBubble.vue'
 import NoteEditor from './NoteEditor.vue'
 import AnnotationDrawer from './AnnotationDrawer.vue'
 
-const { user, token } = useAuth()
+const { user, token, login } = useAuth()
 const { annotations, loaded, loadAnnotations, addAnnotation, replyToAnnotation, toggleReaction } = useAnnotations()
 const route = useRoute()
 
@@ -64,8 +64,6 @@ watch([loaded, annotations, () => route.path], () => {
 })
 
 function onMouseUp(e: MouseEvent) {
-  if (!user.value) return
-
   const sel = window.getSelection()
   if (!sel || sel.isCollapsed || !sel.rangeCount) return
 
@@ -85,26 +83,30 @@ function onMouseUp(e: MouseEvent) {
   const selectedText = sel.toString().trim()
   if (!selectedText) return
 
-  const startOffset = getTextOffset(langBlock, range.startContainer, range.startOffset)
-  const endOffset = getTextOffset(langBlock, range.endContainer, range.endOffset)
-
-  // Capture TextQuoteSelector context (prefix/suffix) for robust re-anchoring
-  const selector = captureSelector(langBlock, startOffset, endOffset)
-
-  selectedInfo.value = {
-    paragraphId,
-    startOffset,
-    endOffset,
-    text: selectedText,
-    prefix: selector.prefix,
-    suffix: selector.suffix,
-  }
-
+  // Show bubble at selection position (for both logged-in and anonymous users)
   const rect = range.getBoundingClientRect()
   bubbleX.value = rect.left + rect.width / 2
   bubbleY.value = rect.top - 10
   showBubble.value = true
   justShownBubble = true
+
+  // Only capture selection details for logged-in users
+  if (user.value) {
+    const startOffset = getTextOffset(langBlock, range.startContainer, range.startOffset)
+    const endOffset = getTextOffset(langBlock, range.endContainer, range.endOffset)
+    const selector = captureSelector(langBlock, startOffset, endOffset)
+
+    selectedInfo.value = {
+      paragraphId,
+      startOffset,
+      endOffset,
+      text: selectedText,
+      prefix: selector.prefix,
+      suffix: selector.suffix,
+    }
+  } else {
+    selectedInfo.value = null
+  }
 }
 
 function onDocClick(e: MouseEvent) {
@@ -123,6 +125,12 @@ function openEditor() {
   showBubble.value = false
   showEditor.value = true
   window.getSelection()?.removeAllRanges()
+}
+
+function handleLogin() {
+  showBubble.value = false
+  window.getSelection()?.removeAllRanges()
+  login()
 }
 
 async function submitNote(note: string) {
@@ -328,12 +336,14 @@ function findParent(node: Node, selector: string): HTMLElement | null {
 </script>
 
 <template>
-  <!-- Step 1: Selection bubble -->
+  <!-- Step 1: Selection bubble (shown for both logged-in and anonymous users) -->
   <NoteBubble
-    :visible="showBubble && !!selectedInfo"
+    :visible="showBubble"
     :x="bubbleX"
     :y="bubbleY"
+    :logged-in="!!user"
     @open-editor="openEditor"
+    @login="handleLogin"
   />
 
   <!-- Step 2: Markdown editor modal -->
