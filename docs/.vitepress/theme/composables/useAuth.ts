@@ -31,7 +31,13 @@ export function useAuth() {
     const saved = localStorage.getItem('gh-token')
     if (saved) {
       token.value = saved
-      loading.value = true
+      // Restore cached user info immediately to avoid avatar flicker
+      const cachedUser = localStorage.getItem('gh-user')
+      if (cachedUser) {
+        try { user.value = JSON.parse(cachedUser) } catch { /* ignore */ }
+      }
+      // Refresh user info in background (validates token & updates cache)
+      if (!user.value) loading.value = true
       fetchUser().finally(() => { loading.value = false })
     }
   }
@@ -54,6 +60,7 @@ export function useAuth() {
     token.value = null
     user.value = null
     localStorage.removeItem('gh-token')
+    localStorage.removeItem('gh-user')
     // Revoke GitHub OAuth grant so next login shows the authorization page,
     // allowing the user to switch accounts
     if (savedToken) {
@@ -101,6 +108,7 @@ export function useAuth() {
       })
       if (resp.ok) {
         user.value = await resp.json()
+        localStorage.setItem('gh-user', JSON.stringify(user.value))
         console.log('[auth] user loaded:', user.value?.login)
       } else if (resp.status === 401) {
         console.warn('[auth] token invalid (401), clearing session')
