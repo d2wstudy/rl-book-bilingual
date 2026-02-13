@@ -289,9 +289,10 @@ async function handleDiscussions(request, url, env, corsHeaders) {
     fetchedWithUserToken = true
     console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — found: ${!!result.discussionId}`)
 
-    // Populate shared cache (strip viewerHasReacted before caching)
+    // Populate shared cache (strip viewerHasReacted before caching, stamp creation time)
     const sharedResult = JSON.parse(JSON.stringify(result))
     if (sharedResult.comments?.length) overlayReactions(sharedResult.comments, {})
+    sharedResult._cachedAt = Date.now()
     const sharedResp = Response.json(sharedResult, {
       headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` },
     })
@@ -399,8 +400,10 @@ async function handleCachePurge(request, url, corsHeaders) {
     if (cached) {
       const data = await cached.json()
       if (updateReactionCount(data.comments, subjectId, reaction, delta)) {
+        const age = Math.floor((Date.now() - (data._cachedAt || Date.now())) / 1000)
+        const remainingTTL = Math.max(1, CACHE_TTL - age)
         const updated = Response.json(data, {
-          headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` },
+          headers: { 'Cache-Control': `public, max-age=${remainingTTL}` },
         })
         await cache.put(cacheKey, updated)
         console.log(`[CACHE PATCH] ${categoryName} | ${pagePath} — ${reaction} ${delta > 0 ? '+' : ''}${delta} on ${subjectId}`)
