@@ -25,7 +25,7 @@ No test runner or linter is configured in this project.
 Markdown files in `docs/chapters/` use custom containers `::: en` and `::: zh` to mark English/Chinese paragraphs. A third container `::: notes` renders author notes (`<div class="author-notes">`). The rendering pipeline:
 
 1. `docs/.vitepress/config.ts` registers markdown-it-container renderers for `en`, `zh`, and `notes` that output `<div class="bilingual-en">` / `<div class="bilingual-zh">` / `<div class="author-notes">`
-2. `docs/.vitepress/theme/index.ts` — `pairBilingualBlocks()` runs at runtime on mount and route change, finds adjacent `.bilingual-en` + `.bilingual-zh` divs, wraps them in `.bilingual-pair`, generates stable IDs (`{headingSlug}-p{counter}`), and injects a per-pair toggle button. It is idempotent (skips if `.bilingual-pair` already exists) and resets its counter on route change.
+2. `docs/.vitepress/theme/index.ts` — `pairBilingualBlocks()` runs at runtime on mount and route change, finds adjacent `.bilingual-en` + `.bilingual-zh` divs, wraps them in `.bilingual-pair`, and injects a per-pair toggle button. It is idempotent (skips if `.bilingual-pair` already exists) and resets its counter on route change. Each pair gets two IDs: a content-stable `data-pair-id` (heading slug + djb2 hash of English text) and a legacy counter-based `data-pair-id-legacy` (`{headingSlug}-p{counter}`) for backward compatibility with existing annotations.
 3. `docs/.vitepress/theme/composables/useLang.ts` — manages global default language (localStorage), `applyDefaultLang()` shows/hides blocks while respecting per-paragraph manual overrides (`.flipped-manual` class)
 
 ### Theme Layout
@@ -48,21 +48,29 @@ GitHub OAuth via Cloudflare Worker proxy:
 
 Environment-specific OAuth apps configured in `docs/.env.development` and `docs/.env.production`.
 
-### Annotation System
+### Discussion-Backed Features
 
-- Storage: GitHub Discussions (one discussion per page, repo: `d2wstudy/rl-book-bilingual`)
-- `AnnotationLayer.vue` captures text selection, shows annotation popup
-- `useAnnotations.ts` manages CRUD via GitHub GraphQL API through `useGithubGql.ts`
-- Notes serialized as JSON in discussion comments with `paragraphId`, offsets, and note text
+Both annotations and chapter comments use GitHub Discussions as storage (repo: `d2wstudy/rl-book-bilingual`), one discussion per page, separated by Discussion category:
+- **Annotations** (category: `Notes`) — `useAnnotations.ts` stores text-selection notes as JSON in comment bodies (`{ type: "annotation", paragraphId, startOffset, endOffset, selectedText, prefix, suffix, note }`)
+- **Chapter comments** (category: `Announcements`) — `useComments.ts` stores plain-text discussion comments
+
+Shared logic lives in `useDiscussionThread.ts` (types `ReactionGroup`/`ThreadReply`, reaction toggling, reply mapping, time formatting). Both composables follow the same pattern: module-level singleton state, deduplication of in-flight loads, optimistic local updates after writes.
+
+`useGithubGql.ts` is the data layer: reads go through the Worker proxy (`GET /api/discussions`), mutations go directly to GitHub GraphQL API with the user's OAuth token. Worker URL is hardcoded: `https://rl-book-auth.d2w.workers.dev`.
 
 ### Cloudflare Worker (`worker/index.js`)
- 
+
 OAuth proxy and Discussions read proxy with four routes:
-- `GET /api/discussions?path=xxx&category=Notes` — read discussions (cached 5 min via Cloudflare Cache API, uses `GITHUB_PAT`)
-- `POST /api/cache/purge?path=xxx&category=Notes[&id=xxx]` — purge shared cache after writes (requires `Authorization: Bearer ...`, supports optional `X-Purge-Key`)
+- `GET /api/discussions?path=xxx&category=Notes[&id=xxx]` — read discussions with two-tier caching
+- `POST /api/cache/purge?path=xxx&category=Notes[&id=xxx]` — purge/refill cache after writes (requires `Authorization: Bearer ...` or `X-Purge-Key`)
 - `POST /api/auth` — exchange OAuth code for token
 - `POST /api/revoke` — revoke OAuth authorization
- 
+
+Two-tier caching via Cloudflare Cache API:
+- **Shared cache** (5 min TTL) — discussion content with `viewerHasReacted` stripped. Populated by first authenticated user's token or PAT as fallback. Purge triggers immediate refill.
+- **Per-user reaction cache** (7 day TTL, keyed by token hash) — lightweight `viewerHasReacted` overlay fetched via batch `nodes(ids:)` query, merged onto shared cache at response time.
+- Reaction toggles use in-place `totalCount` patching on shared cache (no full refill).
+
 Uses separate client ID/secret pairs for dev vs production (env vars with `_DEV` suffix). Worker secrets are set via `wrangler secret`.
 
 ## Key Tech
@@ -72,6 +80,11 @@ Uses separate client ID/secret pairs for dev vs production (env vars with `_DEV`
 - markdown-it-container for bilingual blocks
 - marked + DOMPurify for client-side Markdown rendering in annotations
 - Cloudflare Workers for serverless OAuth/Discussions proxy
+
+## Deployment
+
+- Push to `main` triggers GitHub Actions (`.github/workflows/deploy.yml`): `npm ci` → `npm run build` → deploy to GitHub Pages
+- Worker deployed separately via `npx wrangler deploy` from `worker/` directory
 
 ## Conventions
 
