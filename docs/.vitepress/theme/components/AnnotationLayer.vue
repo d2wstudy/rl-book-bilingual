@@ -215,7 +215,6 @@ function renderAnnotations() {
   if (typeof document === 'undefined') return
 
   document.querySelectorAll('.reader-anno').forEach((el) => {
-    el.querySelectorAll('.anno-badge').forEach(b => b.remove())
     const text = document.createTextNode(el.textContent || '')
     el.parentNode?.replaceChild(text, el)
   })
@@ -290,13 +289,13 @@ function highlightRange(container: Element, threads: AnnotationThread[], range: 
       span.title = `${threads.length} 条笔记`
       span.setAttribute('data-anno-id', threads[0].id)
 
-      // Badge showing note count
+      // Inline bubble (Phosphor Chat Teardrop)
       const totalNotes = threads.reduce((sum, t) => sum + 1 + t.replies.length, 0)
       if (totalNotes > 0) {
-        const badge = document.createElement('span')
-        badge.className = 'anno-badge'
-        badge.textContent = String(totalNotes)
-        span.appendChild(badge)
+        const bubble = document.createElement('span')
+        bubble.className = 'anno-inline-bubble'
+        bubble.innerHTML = `<svg viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"><path d="M132,24A100.11,100.11,0,0,0,32,124v84a16,16,0,0,0,16,16h84a100,100,0,0,0,0-200Z"/></svg><span class="anno-count">${totalNotes}</span>`
+        span.appendChild(bubble)
       }
 
       span.addEventListener('click', (e) => onAnnoClick(e as MouseEvent, threads))
