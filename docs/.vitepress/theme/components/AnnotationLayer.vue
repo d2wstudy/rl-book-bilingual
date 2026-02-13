@@ -354,16 +354,63 @@ function renderAnnotations() {
       }
     }
 
-    // Sort by descending startOffset so DOM mutations don't shift later offsets
-    groups.sort((a, b) => b.range.startOffset - a.range.startOffset)
-
+    // === Atomic segment decomposition: split all ranges into non-overlapping atoms ===
+    // This prevents DOM corruption when annotations partially overlap.
+    const boundarySet = new Set<number>()
     for (const group of groups) {
-      highlightRange(zhBlock, group.threads, group.range, group.showBubble)
+      boundarySet.add(group.range.startOffset)
+      boundarySet.add(group.range.endOffset)
+    }
+    const boundaries = [...boundarySet].sort((a, b) => a - b)
+
+    const atoms: {
+      startOffset: number
+      endOffset: number
+      threads: AnnotationThread[]
+      depth: number
+      bubbleCount: number
+    }[] = []
+
+    for (let i = 0; i < boundaries.length - 1; i++) {
+      const start = boundaries[i]
+      const end = boundaries[i + 1]
+      const covering = groups.filter(g =>
+        g.range.startOffset <= start && g.range.endOffset >= end
+      )
+      if (!covering.length) continue
+
+      // Deduplicate threads across covering groups
+      const seenT = new Set<string>()
+      const allThreads: AnnotationThread[] = []
+      for (const g of covering) {
+        for (const t of g.threads) {
+          if (!seenT.has(t.id)) { seenT.add(t.id); allThreads.push(t) }
+        }
+      }
+
+      // Bubble: show if any covering group's range ends at this segment's end
+      const endingGroups = covering.filter(g => g.range.endOffset === end && g.showBubble)
+      const bubbleSeen = new Set<string>()
+      const bubbleThreads: AnnotationThread[] = []
+      for (const g of endingGroups) {
+        for (const t of g.threads) {
+          if (!bubbleSeen.has(t.id)) { bubbleSeen.add(t.id); bubbleThreads.push(t) }
+        }
+      }
+      const bubbleCount = bubbleThreads.reduce((sum, t) => sum + 1 + t.replies.length, 0)
+
+      atoms.push({ startOffset: start, endOffset: end, threads: allThreads, depth: covering.length, bubbleCount })
+    }
+
+    // Render in reverse so DOM mutations don't shift later offsets
+    atoms.sort((a, b) => b.startOffset - a.startOffset)
+    for (const atom of atoms) {
+      highlightRange(zhBlock, atom.threads, { startOffset: atom.startOffset, endOffset: atom.endOffset }, atom.bubbleCount, atom.depth)
     }
   })
 }
 
-function highlightRange(container: Element, threads: AnnotationThread[], range: ResolvedRange, showBubble = true) {
+function highlightRange(container: Element, threads: AnnotationThread[], range: ResolvedRange, bubbleCount: number, depth: number) {
   // Collect all text nodes that overlap with the range
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT)
   let offset = 0
@@ -385,8 +432,6 @@ function highlightRange(container: Element, threads: AnnotationThread[], range: 
 
   if (!hits.length) return
 
-  const totalNotes = threads.reduce((sum, t) => sum + 1 + t.replies.length, 0)
-
   // Process in reverse so earlier DOM mutations don't shift later nodes
   for (let i = hits.length - 1; i >= 0; i--) {
     const { node: textNode, relStart, relEnd } = hits[i]
@@ -396,15 +441,16 @@ function highlightRange(container: Element, threads: AnnotationThread[], range: 
 
     const span = document.createElement('span')
     span.className = 'reader-anno'
+    if (depth > 1) span.classList.add('reader-anno-overlap')
     span.textContent = middle
     span.title = `${threads.length} 条笔记`
     span.setAttribute('data-anno-id', threads[0].id)
 
-    // Inline bubble only on the very last span
-    if (showBubble && i === hits.length - 1 && totalNotes > 0) {
+    // Inline bubble only on the very last span of this atom
+    if (bubbleCount > 0 && i === hits.length - 1) {
       const bubble = document.createElement('span')
       bubble.className = 'anno-inline-bubble'
-      bubble.innerHTML = `<svg viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"><path d="M132,24A100.11,100.11,0,0,0,32,124v84a16,16,0,0,0,16,16h84a100,100,0,0,0,0-200Z"/></svg><span class="anno-count">${totalNotes}</span>`
+      bubble.innerHTML = `<svg viewBox="0 0 256 256" fill="none" stroke="currentColor" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"><path d="M132,24A100.11,100.11,0,0,0,32,124v84a16,16,0,0,0,16,16h84a100,100,0,0,0,0-200Z"/></svg><span class="anno-count">${bubbleCount}</span>`
       span.appendChild(bubble)
     }
 

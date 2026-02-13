@@ -19,13 +19,23 @@ const emit = defineEmits<{
 
 const { user, login } = useAuth()
 
-const quoteText = computed(() => {
-  if (!props.threads.length) return ''
-  const thread = props.threads[0]
+function threadQuote(thread: AnnotationThread): string {
   if (thread.segments && thread.segments.length > 1) {
     return thread.segments.map(s => s.selectedText).join(' … ')
   }
   return thread.anchor.selectedText
+}
+
+const quoteText = computed(() => {
+  if (!props.threads.length) return ''
+  return threadQuote(props.threads[0])
+})
+
+/** Whether threads reference different text ranges — need per-thread quotes */
+const hasMultipleQuotes = computed(() => {
+  if (props.threads.length <= 1) return false
+  const first = quoteText.value
+  return props.threads.some(t => threadQuote(t) !== first)
 })
 
 function onReply(threadId: string, body: string) {
@@ -65,6 +75,13 @@ function onAddNote(text: string) {
           <!-- Thread list -->
           <div class="drawer-body">
             <div v-for="thread in threads" :key="thread.id" class="drawer-thread">
+              <div v-if="hasMultipleQuotes" class="thread-quote">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="thread-quote-icon">
+                  <path d="M3 21c3 0 7-1 7-8V5c0-1.25-.756-2.017-2-2H4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2 1 0 1 0 1 1v1c0 1-1 2-2 2s-1 .008-1 1.031V21z"/>
+                  <path d="M15 21c3 0 7-1 7-8V5c0-1.25-.757-2.017-2-2h-4c-1.25 0-2 .75-2 1.972V11c0 1.25.75 2 2 2h.75c0 2.25.25 4-2.75 4v3c0 .001 0 1.003 1 1.003z"/>
+                </svg>
+                <span class="thread-quote-text">{{ threadQuote(thread) }}</span>
+              </div>
               <CommentItem
                 :id="thread.id"
                 :body="thread.note"
@@ -195,6 +212,34 @@ function onAddNote(text: string) {
 }
 .drawer-thread:last-child {
   border-bottom: none;
+}
+
+.thread-quote {
+  display: flex;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  background: var(--vp-c-bg-soft);
+  border-radius: 6px;
+  border-left: 2px solid var(--vp-c-warning-1);
+}
+
+.thread-quote-icon {
+  flex-shrink: 0;
+  color: var(--vp-c-text-3);
+  margin-top: 1px;
+}
+
+.thread-quote-text {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--vp-c-text-3);
+  font-style: italic;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .drawer-empty {

@@ -68,6 +68,15 @@
   background: rgba(234, 179, 8, 0.15);
 }
 
+.reader-anno-overlap {
+  background: rgba(234, 179, 8, 0.08);
+  text-decoration-thickness: 2px;
+}
+
+.reader-anno-overlap:hover {
+  background: rgba(234, 179, 8, 0.22);
+}
+
 /* 波浪线末尾 TG 风格气泡（线框） */
 .anno-inline-bubble {
   position: relative;
