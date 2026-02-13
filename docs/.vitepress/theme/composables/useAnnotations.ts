@@ -157,7 +157,7 @@ export function useAnnotations() {
       map.set(paragraphId, list)
       annotations.value = map
     }
-    purgeWorkerCache(pagePath, CATEGORY_NAME)
+    await purgeWorkerCache(pagePath, CATEGORY_NAME)
   }
 
   async function replyToAnnotation(pagePath: string, threadId: string, body: string) {
@@ -173,7 +173,7 @@ export function useAnnotations() {
         }
       }
     }
-    purgeWorkerCache(pagePath, CATEGORY_NAME)
+    await purgeWorkerCache(pagePath, CATEGORY_NAME)
   }
 
   const toggleReaction = createReactionToggler((subjectId) => {

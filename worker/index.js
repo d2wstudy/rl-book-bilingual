@@ -10,7 +10,8 @@
 
 const REPO_OWNER = 'd2wstudy'
 const REPO_NAME = 'rl-book-bilingual'
-const CACHE_TTL = 300 // 5 minutes
+const CACHE_TTL = 300 // 5 minutes (shared cache)
+const USER_REACTION_TTL = 604800 // 7 days (per-user reaction cache, invalidated on toggle)
 
 const COMMENT_FIELDS = `
   id body createdAt author { login avatarUrl }
@@ -44,7 +45,7 @@ export default {
 
     // POST /api/cache/purge?path=xxx&category=Notes
     if (url.pathname === '/api/cache/purge' && request.method === 'POST') {
-      return handleCachePurge(url, corsHeaders)
+      return handleCachePurge(request, url, corsHeaders)
     }
 
     if (request.method !== 'POST') {
@@ -122,7 +123,7 @@ export default {
   },
 }
 
-/** Build a normalized cache key using only path + category (ignoring id param and auth) */
+/** Build a normalized shared cache key (path + category only) */
 function buildCacheKey(url) {
   const pagePath = url.searchParams.get('path')
   const categoryName = url.searchParams.get('category')
@@ -132,40 +133,67 @@ function buildCacheKey(url) {
   return new Request(normalized.toString(), { method: 'GET' })
 }
 
-async function handleDiscussions(request, url, env, corsHeaders) {
+/** Build a per-user reaction cache key (path + category + token hash) */
+function buildUserCacheKey(url, tokenHash) {
   const pagePath = url.searchParams.get('path')
   const categoryName = url.searchParams.get('category')
-  const knownId = url.searchParams.get('id') // optional: cheaper node() query
-  if (!pagePath || !categoryName) {
-    return Response.json({ error: 'Missing path or category' }, { status: 400, headers: corsHeaders })
+  const normalized = new URL(url.origin + '/api/reactions')
+  normalized.searchParams.set('path', pagePath)
+  normalized.searchParams.set('category', categoryName)
+  normalized.searchParams.set('u', tokenHash)
+  return new Request(normalized.toString(), { method: 'GET' })
+}
+
+/** SHA-256 hash of token (first 16 hex chars) for per-user cache key */
+async function hashToken(token) {
+  const data = new TextEncoder().encode(token)
+  const hash = await crypto.subtle.digest('SHA-256', data)
+  return Array.from(new Uint8Array(hash).slice(0, 8))
+    .map(b => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** Extract viewerHasReacted map from comments: { subjectId: { CONTENT: true } } */
+function extractReactions(comments) {
+  const map = {}
+  for (const c of comments) {
+    for (const g of c.reactionGroups || []) {
+      if (g.viewerHasReacted) {
+        if (!map[c.id]) map[c.id] = {}
+        map[c.id][g.content] = true
+      }
+    }
+    for (const r of c.replies?.nodes || []) {
+      for (const g of r.reactionGroups || []) {
+        if (g.viewerHasReacted) {
+          if (!map[r.id]) map[r.id] = {}
+          map[r.id][g.content] = true
+        }
+      }
+    }
   }
+  return map
+}
 
-  // Use user's token if provided, fall back to PAT
-  const authHeader = request.headers.get('Authorization')
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
-  const effectiveToken = token || env.GITHUB_PAT
-  if (!effectiveToken) {
-    return Response.json({ error: 'Server not configured' }, { status: 500, headers: corsHeaders })
+/** Overlay per-user reaction state onto shared cache comments (mutates in place) */
+function overlayReactions(comments, reactionMap) {
+  for (const c of comments) {
+    const cr = reactionMap[c.id] || {}
+    for (const g of c.reactionGroups || []) {
+      g.viewerHasReacted = !!cr[g.content]
+    }
+    for (const r of c.replies?.nodes || []) {
+      const rr = reactionMap[r.id] || {}
+      for (const g of r.reactionGroups || []) {
+        g.viewerHasReacted = !!rr[g.content]
+      }
+    }
   }
+}
 
-  // Check cache (normalized key: path + category only)
-  const cache = caches.default
-  const cacheKey = buildCacheKey(url)
-  const cached = await cache.match(cacheKey)
-  if (cached) {
-    console.log(`[CACHE HIT] ${categoryName} | ${pagePath}`)
-    const resp = new Response(cached.body, cached)
-    resp.headers.set('Access-Control-Allow-Origin', '*')
-    resp.headers.set('X-Cache', 'HIT')
-    return resp
-  }
-
-  console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — fetching from GitHub`)
-
-  let result
+/** Fetch discussion from GitHub (reusable for both shared and per-user queries) */
+async function fetchDiscussion(token, pagePath, categoryName, knownId) {
   if (knownId) {
-    // Cheaper node() query when discussion ID is known (~51 points vs ~153)
-    const data = await githubGql(effectiveToken, `query($id: ID!) {
+    const data = await githubGql(token, `query($id: ID!) {
       node(id: $id) {
         ... on Discussion {
           id
@@ -174,45 +202,108 @@ async function handleDiscussions(request, url, env, corsHeaders) {
       }
     }`, { id: knownId })
     const node = data?.node
-    result = node
+    return node
       ? { discussionId: node.id, comments: node.comments.nodes }
       : { discussionId: null, comments: [] }
-  } else {
-    // Search query when discussion ID is unknown
-    const searchQuery = `repo:${REPO_OWNER}/${REPO_NAME} in:title ${JSON.stringify(pagePath)} category:${JSON.stringify(categoryName)}`
-    const data = await githubGql(effectiveToken, `query($q: String!) {
-      search(query: $q, type: DISCUSSION, first: 3) {
-        nodes {
-          ... on Discussion {
-            id
-            title
-            comments(first: 100) { nodes { ${COMMENT_FIELDS} } }
-          }
+  }
+  const searchQuery = `repo:${REPO_OWNER}/${REPO_NAME} in:title ${JSON.stringify(pagePath)} category:${JSON.stringify(categoryName)}`
+  const data = await githubGql(token, `query($q: String!) {
+    search(query: $q, type: DISCUSSION, first: 3) {
+      nodes {
+        ... on Discussion {
+          id title
+          comments(first: 100) { nodes { ${COMMENT_FIELDS} } }
         }
       }
-    }`, { q: searchQuery })
-    const nodes = data?.search?.nodes || []
-    const match = nodes.find(n => n.title === pagePath)
-    result = match
-      ? { discussionId: match.id, comments: match.comments.nodes }
-      : { discussionId: null, comments: [] }
-  }
-
-  console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — found: ${!!result.discussionId}`)
-
-  // Cache the response
-  const response = Response.json(result, {
-    headers: {
-      ...corsHeaders,
-      'Cache-Control': `public, max-age=${CACHE_TTL}`,
-      'X-Cache': 'MISS',
-    },
-  })
-  await cache.put(cacheKey, response.clone())
-  return response
+    }
+  }`, { q: searchQuery })
+  const nodes = data?.search?.nodes || []
+  const match = nodes.find(n => n.title === pagePath)
+  return match
+    ? { discussionId: match.id, comments: match.comments.nodes }
+    : { discussionId: null, comments: [] }
 }
 
-async function handleCachePurge(url, corsHeaders) {
+async function handleDiscussions(request, url, env, corsHeaders) {
+  const pagePath = url.searchParams.get('path')
+  const categoryName = url.searchParams.get('category')
+  const knownId = url.searchParams.get('id')
+  if (!pagePath || !categoryName) {
+    return Response.json({ error: 'Missing path or category' }, { status: 400, headers: corsHeaders })
+  }
+
+  const authHeader = request.headers.get('Authorization')
+  const userToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
+  const effectiveToken = userToken || env.GITHUB_PAT
+  if (!effectiveToken) {
+    return Response.json({ error: 'Server not configured' }, { status: 500, headers: corsHeaders })
+  }
+
+  const cache = caches.default
+  const cacheKey = buildCacheKey(url)
+  const cached = await cache.match(cacheKey)
+
+  let result
+  let fetchedWithUserToken = false
+
+  if (cached) {
+    console.log(`[CACHE HIT] ${categoryName} | ${pagePath}`)
+    result = await cached.json()
+  } else {
+    console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — fetching from GitHub`)
+    result = await fetchDiscussion(effectiveToken, pagePath, categoryName, knownId)
+    fetchedWithUserToken = !!userToken
+    console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — found: ${!!result.discussionId}`)
+
+    // Populate shared cache
+    const sharedResp = Response.json(result, {
+      headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` },
+    })
+    await cache.put(cacheKey, sharedResp)
+  }
+
+  // Per-user reaction overlay for authenticated users;
+  // for unauthenticated users, strip leaked viewerHasReacted from shared cache
+  if (!userToken && result.comments?.length) {
+    overlayReactions(result.comments, {})
+  } else if (userToken && result.comments?.length) {
+    const tHash = await hashToken(userToken)
+    const userCacheKey = buildUserCacheKey(url, tHash)
+    const userCached = await cache.match(userCacheKey)
+
+    if (userCached) {
+      // Per-user cache hit — overlay onto shared result
+      console.log(`[USER CACHE HIT] ${categoryName} | ${pagePath}`)
+      overlayReactions(result.comments, await userCached.json())
+    } else if (fetchedWithUserToken) {
+      // Just fetched with this user's token — reactions already correct, cache them
+      const reactionMap = extractReactions(result.comments)
+      await cache.put(userCacheKey, Response.json(reactionMap, {
+        headers: { 'Cache-Control': `public, max-age=${USER_REACTION_TTL}` },
+      }))
+      console.log(`[USER CACHE SET] ${categoryName} | ${pagePath}`)
+    } else {
+      // Shared cache hit but no per-user data — fetch with user's token (~51 pts)
+      const discId = result.discussionId
+      if (discId) {
+        console.log(`[USER CACHE MISS] ${categoryName} | ${pagePath} — fetching reactions`)
+        const userData = await fetchDiscussion(userToken, pagePath, categoryName, discId)
+        const reactionMap = extractReactions(userData.comments || [])
+        overlayReactions(result.comments, reactionMap)
+        await cache.put(userCacheKey, Response.json(reactionMap, {
+          headers: { 'Cache-Control': `public, max-age=${USER_REACTION_TTL}` },
+        }))
+        console.log(`[USER CACHE SET] ${categoryName} | ${pagePath}`)
+      }
+    }
+  }
+
+  return Response.json(result, {
+    headers: { ...corsHeaders, 'X-Cache': cached ? 'HIT' : 'MISS' },
+  })
+}
+
+async function handleCachePurge(request, url, corsHeaders) {
   const pagePath = url.searchParams.get('path')
   const categoryName = url.searchParams.get('category')
   if (!pagePath || !categoryName) {
@@ -222,8 +313,20 @@ async function handleCachePurge(url, corsHeaders) {
   const cache = caches.default
   const cacheKey = buildCacheKey(url)
   const deleted = await cache.delete(cacheKey)
-  console.log(`[CACHE PURGE] ${categoryName} | ${pagePath} — deleted: ${deleted}`)
-  return Response.json({ ok: true, deleted }, { headers: corsHeaders })
+  console.log(`[CACHE PURGE] ${categoryName} | ${pagePath} — shared: ${deleted}`)
+
+  // Also purge per-user reaction cache if token provided
+  const authHeader = request.headers.get('Authorization')
+  const userToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
+  let userDeleted = false
+  if (userToken) {
+    const tHash = await hashToken(userToken)
+    const userCacheKey = buildUserCacheKey(url, tHash)
+    userDeleted = await cache.delete(userCacheKey)
+    console.log(`[CACHE PURGE] ${categoryName} | ${pagePath} — user: ${userDeleted}`)
+  }
+
+  return Response.json({ ok: true, deleted, userDeleted }, { headers: corsHeaders })
 }
 
 async function githubGql(token, query, variables) {

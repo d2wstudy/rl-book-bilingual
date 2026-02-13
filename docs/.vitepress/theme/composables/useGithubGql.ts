@@ -80,10 +80,18 @@ async function fetchViaProxy(
   }
 }
 
-/** Purge Worker cache for a specific page + category (call after write operations) */
-export function purgeWorkerCache(pagePath: string, categoryName: string) {
+/** Purge Worker cache for a specific page + category (call after write operations).
+ *  Sends user token so Worker can also purge per-user reaction cache. */
+export async function purgeWorkerCache(pagePath: string, categoryName: string) {
   const params = new URLSearchParams({ path: pagePath, category: categoryName })
-  fetch(`${WORKER_URL}/api/cache/purge?${params}`, { method: 'POST' }).catch(() => {})
+  const headers: Record<string, string> = {}
+  const { token } = useAuth()
+  if (token.value) {
+    headers['Authorization'] = `Bearer ${token.value}`
+  }
+  try {
+    await fetch(`${WORKER_URL}/api/cache/purge?${params}`, { method: 'POST', headers })
+  } catch { /* ignore network errors */ }
 }
 
 /** Create a new discussion in a category */
@@ -157,8 +165,9 @@ export async function gql(query: string, variables: Record<string, any>) {
   const t = token.value
   if (!t) return null
 
-  // Dev: inject rateLimit field to monitor API point consumption
-  const actualQuery = import.meta.env.DEV
+  // Dev: inject rateLimit field to monitor API point consumption (queries only, not mutations)
+  const isMutation = query.trimStart().startsWith('mutation')
+  const actualQuery = import.meta.env.DEV && !isMutation
     ? query.replace(/\{/, '{ rateLimit { cost remaining resetAt }')
     : query
 

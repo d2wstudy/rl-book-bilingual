@@ -166,7 +166,7 @@ async function onDrawerReply(threadId: string, body: string) {
 
 async function onDrawerReact(subjectId: string, content: string) {
   await toggleReaction(subjectId, content)
-  purgeWorkerCache(route.path, 'Notes')
+  await purgeWorkerCache(route.path, 'Notes')
 }
 
 async function onDrawerAddNote(text: string) {

@@ -43,7 +43,7 @@ async function onReply(commentId: string, body: string) {
 
 async function onReact(subjectId: string, content: string) {
   await toggleReaction(subjectId, content)
-  purgeWorkerCache(route.path, 'Announcements')
+  await purgeWorkerCache(route.path, 'Announcements')
 }
 </script>
 
