@@ -58,11 +58,9 @@ export function useComments() {
 
   async function _doLoadComments(pagePath: string) {
     const knownId = _discussionId || storedDiscussionId(pagePath)
-    comments.value = []
-    loaded.value = false
-    _discussionId = null
     try {
       const result = await findDiscussionWithComments(pagePath, CATEGORY_NAME, knownId)
+      _discussionId = null
       if (result) {
         _discussionId = result.discussionId
         if (result.discussionId) storeDiscussionId(pagePath, result.discussionId)
@@ -75,6 +73,8 @@ export function useComments() {
           replies: (c.replies?.nodes || []).map(mapReply),
           reactions: mapReactions(c.reactionGroups),
         }))
+      } else {
+        comments.value = []
       }
     } finally {
       loaded.value = true
