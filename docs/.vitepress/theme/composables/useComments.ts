@@ -35,9 +35,13 @@ let _loadingPath: string | null = null
 export function useComments() {
   const { token } = useAuth()
 
-  async function loadComments(pagePath: string) {
-    // Deduplicate: if already loading the same path, reuse the promise
-    if (_loadPromise && _loadingPath === pagePath) return _loadPromise
+  async function loadComments(pagePath: string, force = false) {
+    if (_loadPromise && _loadingPath === pagePath) {
+      if (!force) return _loadPromise
+      // Force: wait for in-flight request, then re-fetch with current auth state
+      await _loadPromise
+    }
+    if (force) invalidateDiscussionCache(pagePath, CATEGORY_NAME)
     _loadingPath = pagePath
     _loadPromise = _doLoadComments(pagePath).finally(() => {
       _loadPromise = null
@@ -47,11 +51,12 @@ export function useComments() {
   }
 
   async function _doLoadComments(pagePath: string) {
+    const knownId = _discussionId
     comments.value = []
     loaded.value = false
     _discussionId = null
     try {
-      const result = await findDiscussionWithComments(pagePath, CATEGORY_NAME)
+      const result = await findDiscussionWithComments(pagePath, CATEGORY_NAME, knownId)
       if (result) {
         _discussionId = result.discussionId
         comments.value = result.comments.map((c: any) => ({
@@ -80,10 +85,22 @@ export function useComments() {
       discussionId = await createDiscussion(pagePath, CATEGORY_NAME, `章节讨论：${pagePath}`)
     }
     if (!discussionId) return
+    _discussionId = discussionId
 
-    await addDiscussionComment(discussionId, body)
+    const newComment = await addDiscussionComment(discussionId, body)
+    if (newComment) {
+      // Append to local state directly — no re-fetch needed
+      comments.value = [...comments.value, {
+        id: newComment.id,
+        body: newComment.body,
+        author: newComment.author.login,
+        authorAvatar: newComment.author.avatarUrl,
+        createdAt: newComment.createdAt,
+        replies: [],
+        reactions: mapReactions(newComment.reactionGroups),
+      }]
+    }
     invalidateDiscussionCache(pagePath, CATEGORY_NAME)
-    await loadComments(pagePath)
   }
 
   async function replyToComment(pagePath: string, commentId: string, body: string) {
@@ -95,9 +112,15 @@ export function useComments() {
     }
     if (!discussionId) return
 
-    await addDiscussionReply(discussionId, commentId, body)
+    const newReply = await addDiscussionReply(discussionId, commentId, body)
+    if (newReply) {
+      // Append reply to the parent comment locally — no re-fetch needed
+      const parent = comments.value.find(c => c.id === commentId)
+      if (parent) {
+        parent.replies = [...parent.replies, mapReply(newReply)]
+      }
+    }
     invalidateDiscussionCache(pagePath, CATEGORY_NAME)
-    await loadComments(pagePath)
   }
 
   const toggleReaction = createReactionToggler((subjectId) => {

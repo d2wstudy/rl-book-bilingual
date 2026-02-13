@@ -41,9 +41,12 @@ let _loadingPath: string | null = null
 export function useAnnotations() {
   const { token } = useAuth()
 
-  async function loadAnnotations(pagePath: string) {
-    // Deduplicate: if already loading the same path, reuse the promise
-    if (_loadPromise && _loadingPath === pagePath) return _loadPromise
+  async function loadAnnotations(pagePath: string, force = false) {
+    if (_loadPromise && _loadingPath === pagePath) {
+      if (!force) return _loadPromise
+      await _loadPromise
+    }
+    if (force) invalidateDiscussionCache(pagePath, CATEGORY_NAME)
     _loadingPath = pagePath
     _loadPromise = _doLoadAnnotations(pagePath).finally(() => {
       _loadPromise = null
@@ -53,8 +56,9 @@ export function useAnnotations() {
   }
 
   async function _doLoadAnnotations(pagePath: string) {
+    const knownId = _discussionId
     try {
-      const result = await findDiscussionWithComments(pagePath, CATEGORY_NAME)
+      const result = await findDiscussionWithComments(pagePath, CATEGORY_NAME, knownId)
       const map = new Map<string, AnnotationThread[]>()
       _discussionId = null
       if (result) {
@@ -115,6 +119,7 @@ export function useAnnotations() {
       discussionId = await createDiscussion(pagePath, CATEGORY_NAME, `读者笔记：${pagePath}`)
     }
     if (!discussionId) return
+    _discussionId = discussionId
 
     const body = JSON.stringify({
       type: 'annotation',
@@ -127,16 +132,41 @@ export function useAnnotations() {
       note,
     })
 
-    await addDiscussionComment(discussionId, body)
+    const newComment = await addDiscussionComment(discussionId, body)
+    if (newComment) {
+      // Append to local state directly — no re-fetch needed
+      const thread: AnnotationThread = {
+        id: newComment.id,
+        anchor: { paragraphId, startOffset, endOffset, selectedText, prefix, suffix },
+        note,
+        author: newComment.author.login,
+        authorAvatar: newComment.author.avatarUrl,
+        createdAt: newComment.createdAt,
+        replies: [],
+        reactions: mapReactions(newComment.reactionGroups),
+      }
+      const map = new Map(annotations.value)
+      const list = [...(map.get(paragraphId) || []), thread]
+      map.set(paragraphId, list)
+      annotations.value = map
+    }
     invalidateDiscussionCache(pagePath, CATEGORY_NAME)
-    await loadAnnotations(pagePath)
   }
 
   async function replyToAnnotation(pagePath: string, threadId: string, body: string) {
     if (!token.value || !_discussionId) return
-    await addDiscussionReply(_discussionId, threadId, body)
+    const newReply = await addDiscussionReply(_discussionId, threadId, body)
+    if (newReply) {
+      // Append reply to the parent thread locally — no re-fetch needed
+      for (const threads of annotations.value.values()) {
+        const parent = threads.find(t => t.id === threadId)
+        if (parent) {
+          parent.replies = [...parent.replies, mapReply(newReply)]
+          break
+        }
+      }
+    }
     invalidateDiscussionCache(pagePath, CATEGORY_NAME)
-    await loadAnnotations(pagePath)
   }
 
   const toggleReaction = createReactionToggler((subjectId) => {

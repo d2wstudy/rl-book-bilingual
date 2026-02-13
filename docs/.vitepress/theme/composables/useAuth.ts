@@ -10,8 +10,16 @@ interface GitHubUser {
   html_url: string
 }
 
-const token = ref<string | null>(null)
-const user = ref<GitHubUser | null>(null)
+// Restore token & user synchronously at module level so they're available
+// during component setup phase (before onMounted / init() runs).
+// This prevents the initial watch(route.path, { immediate: true }) from
+// hitting the Worker proxy when the user is already logged in.
+const _isBrowser = typeof window !== 'undefined'
+const _savedToken = _isBrowser ? localStorage.getItem('gh-token') : null
+const _savedUser = _savedToken && _isBrowser ? localStorage.getItem('gh-user') : null
+
+const token = ref<string | null>(_savedToken)
+const user = ref<GitHubUser | null>(_savedUser ? (() => { try { return JSON.parse(_savedUser) } catch { return null } })() : null)
 const loading = ref(false)
 let revokePromise: Promise<void> | null = null
 
@@ -27,16 +35,9 @@ export function useAuth() {
       return
     }
 
-    // Restore from localStorage (persists across browser sessions)
-    const saved = localStorage.getItem('gh-token')
-    if (saved) {
-      token.value = saved
-      // Restore cached user info immediately to avoid avatar flicker
-      const cachedUser = localStorage.getItem('gh-user')
-      if (cachedUser) {
-        try { user.value = JSON.parse(cachedUser) } catch { /* ignore */ }
-      }
-      // Refresh user info in background (validates token & updates cache)
+    // Token & user already restored at module level.
+    // Just validate the token in background (and update user cache).
+    if (token.value) {
       if (!user.value) loading.value = true
       fetchUser().finally(() => { loading.value = false })
     }

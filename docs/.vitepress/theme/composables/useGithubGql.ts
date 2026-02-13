@@ -18,7 +18,8 @@ function cacheKey(pagePath: string, categoryName: string) {
   return `${categoryName}::${pagePath}`
 }
 
-/** Invalidate cached discussion data for a page (call after mutations) */
+/** Invalidate client-side cached discussion data for a page (call after mutations).
+ *  Worker cache is never purged — it expires naturally via TTL (5 min). */
 export function invalidateDiscussionCache(pagePath: string, categoryName: string) {
   _discussionCache.delete(cacheKey(pagePath, categoryName))
 }
@@ -50,10 +51,12 @@ export async function getCategoryId(categoryName: string): Promise<string | null
   return categories.get(categoryName) || null
 }
 
-/** Find a discussion by title in a category AND fetch its comments */
+/** Find a discussion by title in a category AND fetch its comments.
+ *  If knownDiscussionId is provided, uses cheaper node(id) query instead of search. */
 export async function findDiscussionWithComments(
   pagePath: string,
   categoryName: string,
+  knownDiscussionId?: string | null,
 ): Promise<{ discussionId: string | null; comments: any[] } | null> {
   const key = cacheKey(pagePath, categoryName)
 
@@ -67,7 +70,7 @@ export async function findDiscussionWithComments(
   const inflight = _inflightDiscussions.get(key)
   if (inflight) return inflight
 
-  const promise = _fetchDiscussion(pagePath, categoryName)
+  const promise = _fetchDiscussion(pagePath, categoryName, knownDiscussionId)
     .then((result) => {
       _discussionCache.set(key, { data: result, ts: Date.now() })
       return result
@@ -83,10 +86,79 @@ export async function findDiscussionWithComments(
 async function _fetchDiscussion(
   pagePath: string,
   categoryName: string,
+  knownDiscussionId?: string | null,
 ): Promise<{ discussionId: string | null; comments: any[] } | null> {
-  // Always use Worker proxy for reads — benefits from Cloudflare Cache (5 min TTL)
-  // shared across all users. Trade-off: viewerHasReacted is not available (defaults to false).
-  return fetchViaProxy(pagePath, categoryName)
+  const { token } = useAuth()
+  if (!token.value) return fetchViaProxy(pagePath, categoryName)
+  // If we already know the discussion ID, use cheaper node() query instead of search
+  if (knownDiscussionId) return fetchDiscussionById(knownDiscussionId)
+  return fetchDirectFromGitHub(pagePath, categoryName)
+}
+
+/** Fetch a known discussion by its node ID (cheaper than search) */
+async function fetchDiscussionById(
+  discussionId: string,
+): Promise<{ discussionId: string; comments: any[] } | null> {
+  const data = await gql(`query($id: ID!) {
+    node(id: $id) {
+      ... on Discussion {
+        id
+        comments(first: 100) {
+          nodes {
+            id body createdAt author { login avatarUrl }
+            reactionGroups { content viewerHasReacted reactors { totalCount } }
+            replies(first: 50) {
+              nodes {
+                id body createdAt author { login avatarUrl }
+                reactionGroups { content viewerHasReacted reactors { totalCount } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }`, { id: discussionId })
+
+  const node = data?.node
+  return node
+    ? { discussionId: node.id, comments: node.comments.nodes }
+    : null
+}
+
+/** Direct GitHub GraphQL fetch using the user's own token */
+async function fetchDirectFromGitHub(
+  pagePath: string,
+  categoryName: string,
+): Promise<{ discussionId: string | null; comments: any[] } | null> {
+  const searchQuery = `repo:${REPO_OWNER}/${REPO_NAME} in:title ${JSON.stringify(pagePath)} category:${JSON.stringify(categoryName)}`
+  const data = await gql(`query($q: String!) {
+    search(query: $q, type: DISCUSSION, first: 3) {
+      nodes {
+        ... on Discussion {
+          id
+          title
+          comments(first: 100) {
+            nodes {
+              id body createdAt author { login avatarUrl }
+              reactionGroups { content viewerHasReacted reactors { totalCount } }
+              replies(first: 50) {
+                nodes {
+                  id body createdAt author { login avatarUrl }
+                  reactionGroups { content viewerHasReacted reactors { totalCount } }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }`, { q: searchQuery })
+
+  const nodes = data?.search?.nodes || []
+  const match = nodes.find((n: any) => n.title === pagePath)
+  return match
+    ? { discussionId: match.id, comments: match.comments.nodes }
+    : { discussionId: null, comments: [] }
 }
 
 /** Read-only proxy via Cloudflare Worker (for unauthenticated users) */
@@ -124,13 +196,18 @@ export async function createDiscussion(pagePath: string, categoryName: string, b
   return result?.createDiscussion?.discussion?.id || null
 }
 
-/** Add a comment to a discussion */
+/** Add a comment to a discussion — returns the new comment data */
 export async function addDiscussionComment(discussionId: string, body: string) {
-  return gql(`mutation($discussionId: ID!, $body: String!) {
+  const data = await gql(`mutation($discussionId: ID!, $body: String!) {
     addDiscussionComment(input: { discussionId: $discussionId, body: $body }) {
-      comment { id }
+      comment {
+        id body createdAt
+        author { login avatarUrl }
+        reactionGroups { content viewerHasReacted reactors { totalCount } }
+      }
     }
   }`, { discussionId, body })
+  return data?.addDiscussionComment?.comment || null
 }
 
 /** Add a reaction to a subject (comment or reply) */
@@ -151,13 +228,18 @@ export async function removeReaction(subjectId: string, content: string) {
   }`, { subjectId, content })
 }
 
-/** Add a reply to a discussion comment */
+/** Add a reply to a discussion comment — returns the new reply data */
 export async function addDiscussionReply(discussionId: string, replyToId: string, body: string) {
-  return gql(`mutation($discussionId: ID!, $replyToId: ID!, $body: String!) {
+  const data = await gql(`mutation($discussionId: ID!, $replyToId: ID!, $body: String!) {
     addDiscussionComment(input: { discussionId: $discussionId, replyToId: $replyToId, body: $body }) {
-      comment { id }
+      comment {
+        id body createdAt
+        author { login avatarUrl }
+        reactionGroups { content viewerHasReacted reactors { totalCount } }
+      }
     }
   }`, { discussionId, replyToId, body })
+  return data?.addDiscussionComment?.comment || null
 }
 
 /** Shared GraphQL helper (requires auth) */

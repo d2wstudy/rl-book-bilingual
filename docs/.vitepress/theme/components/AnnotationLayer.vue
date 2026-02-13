@@ -3,6 +3,7 @@ import { ref, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vitepress'
 import { useAuth } from '../composables/useAuth'
 import { useAnnotations, type AnnotationThread } from '../composables/useAnnotations'
+import { invalidateDiscussionCache } from '../composables/useGithubGql'
 import { captureSelector, resolveSelector, type ResolvedRange } from '../composables/useTextAnchor'
 import NoteBubble from './NoteBubble.vue'
 import NoteEditor from './NoteEditor.vue'
@@ -53,9 +54,9 @@ watch(() => route.path, (path) => {
   drawerOpen.value = false
 }, { immediate: true })
 
-// Only reload on token change if data was already loaded (avoids double-load on init)
+// Re-fetch with user's own token after login (or fall back to Worker after logout)
 watch(token, () => {
-  if (loaded.value) loadAnnotations(route.path)
+  loadAnnotations(route.path, true)
 })
 
 watch([loaded, annotations, () => route.path], () => {
@@ -165,6 +166,7 @@ async function onDrawerReply(threadId: string, body: string) {
 
 async function onDrawerReact(subjectId: string, content: string) {
   await toggleReaction(subjectId, content)
+  invalidateDiscussionCache(route.path, 'Notes')
 }
 
 async function onDrawerAddNote(text: string) {

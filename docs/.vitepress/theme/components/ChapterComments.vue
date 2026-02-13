@@ -3,6 +3,7 @@ import { ref, watch, computed } from 'vue'
 import { useRoute } from 'vitepress'
 import { useAuth } from '../composables/useAuth'
 import { useComments } from '../composables/useComments'
+import { invalidateDiscussionCache } from '../composables/useGithubGql'
 import { formatRelativeTime } from '../composables/useDiscussionThread'
 import MarkdownEditor from './MarkdownEditor.vue'
 import CommentItem from './CommentItem.vue'
@@ -21,9 +22,9 @@ const totalCount = computed(() =>
 // Single watcher with immediate: true replaces both onMounted + watch(route.path)
 watch(() => route.path, (path) => loadComments(path), { immediate: true })
 
-// Only reload on token change if data was already loaded (avoids double-load on init)
+// Re-fetch with user's own token after login (or fall back to Worker after logout)
 watch(token, () => {
-  if (loaded.value) loadComments(route.path)
+  loadComments(route.path, true)
 })
 
 async function onSubmit(text: string) {
@@ -42,6 +43,7 @@ async function onReply(commentId: string, body: string) {
 
 async function onReact(subjectId: string, content: string) {
   await toggleReaction(subjectId, content)
+  invalidateDiscussionCache(route.path, 'Announcements')
 }
 </script>
 

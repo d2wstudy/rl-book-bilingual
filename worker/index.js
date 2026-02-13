@@ -122,29 +122,22 @@ async function handleDiscussions(url, env, corsHeaders) {
   const cacheKey = new Request(url.toString(), { method: 'GET' })
   const cached = await cache.match(cacheKey)
   if (cached) {
+    console.log(`[CACHE HIT] ${categoryName} | ${pagePath}`)
     const resp = new Response(cached.body, cached)
     resp.headers.set('Access-Control-Allow-Origin', '*')
+    resp.headers.set('X-Cache', 'HIT')
     return resp
   }
 
-  // Fetch categories to get category ID
-  const catData = await githubGql(env.GITHUB_PAT, `query($owner: String!, $name: String!) {
-    repository(owner: $owner, name: $name) {
-      discussionCategories(first: 20) { nodes { id name } }
-    }
-  }`, { owner: REPO_OWNER, name: REPO_NAME })
+  console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — fetching from GitHub`)
 
-  const categories = catData?.repository?.discussionCategories?.nodes || []
-  const category = categories.find(c => c.name === categoryName)
-  if (!category) {
-    return Response.json({ discussionId: null, comments: [] }, { headers: corsHeaders })
-  }
-
-  // Fetch discussions with comments
-  const data = await githubGql(env.GITHUB_PAT, `query($owner: String!, $name: String!, $categoryId: ID) {
-    repository(owner: $owner, name: $name) {
-      discussions(first: 50, categoryId: $categoryId, orderBy: {field: CREATED_AT, direction: DESC}) {
-        nodes {
+  // Use search query to find the exact discussion by title + category
+  // This is far cheaper than fetching all discussions: 1 result vs 50
+  const searchQuery = `repo:${REPO_OWNER}/${REPO_NAME} in:title ${JSON.stringify(pagePath)} category:${JSON.stringify(categoryName)}`
+  const data = await githubGql(env.GITHUB_PAT, `query($q: String!) {
+    search(query: $q, type: DISCUSSION, first: 3) {
+      nodes {
+        ... on Discussion {
           id
           title
           comments(first: 100) {
@@ -162,20 +155,23 @@ async function handleDiscussions(url, env, corsHeaders) {
         }
       }
     }
-  }`, { owner: REPO_OWNER, name: REPO_NAME, categoryId: category.id })
+  }`, { q: searchQuery })
 
-  const nodes = data?.repository?.discussions?.nodes || []
+  const nodes = data?.search?.nodes || []
   const match = nodes.find(n => n.title === pagePath)
 
   const result = match
     ? { discussionId: match.id, comments: match.comments.nodes }
     : { discussionId: null, comments: [] }
 
+  console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — found: ${!!match}`)
+
   // Cache the response
   const response = Response.json(result, {
     headers: {
       ...corsHeaders,
       'Cache-Control': `public, max-age=${CACHE_TTL}`,
+      'X-Cache': 'MISS',
     },
   })
   await cache.put(cacheKey, response.clone())
