@@ -6,5 +6,5 @@ preview_urls = false
 
 [observability]
 [observability.logs]
-enabled = false
+enabled = true
 invocation_logs = true
