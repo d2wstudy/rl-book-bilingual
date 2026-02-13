@@ -45,7 +45,7 @@ export default {
 
     // POST /api/cache/purge?path=xxx&category=Notes
     if (url.pathname === '/api/cache/purge' && request.method === 'POST') {
-      return handleCachePurge(request, url, corsHeaders)
+      return handleCachePurge(request, url, env, corsHeaders)
     }
 
     if (request.method !== 'POST') {
@@ -297,9 +297,18 @@ async function handleDiscussions(request, url, env, corsHeaders) {
       headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` },
     })
     await cache.put(cacheKey, sharedResp)
+  } else if (env.GITHUB_PAT) {
+    // Unauthenticated user, cache miss — use PAT to populate shared cache (cold start only)
+    console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — no user token, fetching with PAT`)
+    result = await fetchDiscussion(env.GITHUB_PAT, pagePath, categoryName, knownId)
+    result._cachedAt = Date.now()
+    const sharedResp = Response.json(result, {
+      headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` },
+    })
+    await cache.put(cacheKey, sharedResp)
+    console.log(`[CACHE FILL] ${categoryName} | ${pagePath} — PAT cold start, ${result.comments?.length || 0} comments`)
   } else {
-    // Unauthenticated user, cache miss — return empty, next auth user will populate
-    console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — no token, returning empty`)
+    console.log(`[CACHE MISS] ${categoryName} | ${pagePath} — no token and no PAT`)
     result = { discussionId: null, comments: [] }
   }
 
@@ -372,7 +381,7 @@ function patchNode(node, subjectId, reaction, delta) {
   return true
 }
 
-async function handleCachePurge(request, url, corsHeaders) {
+async function handleCachePurge(request, url, env, corsHeaders) {
   const pagePath = url.searchParams.get('path')
   const categoryName = url.searchParams.get('category')
   const userOnly = url.searchParams.get('user_only') === '1'
@@ -383,19 +392,39 @@ async function handleCachePurge(request, url, corsHeaders) {
     return Response.json({ error: 'Missing path or category' }, { status: 400, headers: corsHeaders })
   }
 
+  const authHeader = request.headers.get('Authorization')
+  const userToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
+
   const cache = caches.default
+  const cacheKey = buildCacheKey(url)
   let deleted = false
 
-  // Only purge shared cache for structural changes (new comments/replies), not reactions
+  // Structural changes (new comments/replies): purge then immediately repopulate
   if (!userOnly) {
-    const cacheKey = buildCacheKey(url)
     deleted = await cache.delete(cacheKey)
     console.log(`[CACHE PURGE] ${categoryName} | ${pagePath} — shared: ${deleted}`)
+
+    // Immediately repopulate using the writing user's token (no PAT cost)
+    const refillToken = userToken || env.GITHUB_PAT
+    if (refillToken) {
+      try {
+        const fresh = await fetchDiscussion(refillToken, pagePath, categoryName)
+        if (fresh?.comments) {
+          overlayReactions(fresh.comments, {})
+          fresh._cachedAt = Date.now()
+          await cache.put(cacheKey, Response.json(fresh, {
+            headers: { 'Cache-Control': `public, max-age=${CACHE_TTL}` },
+          }))
+          console.log(`[CACHE REFILL] ${categoryName} | ${pagePath} — ${fresh.comments.length} comments`)
+        }
+      } catch (e) {
+        console.log(`[CACHE REFILL FAILED] ${categoryName} | ${pagePath} — ${e.message}`)
+      }
+    }
   }
 
   // In-place update of shared cache totalCount for reaction toggles
   if (subjectId && reaction && delta) {
-    const cacheKey = buildCacheKey(url)
     const cached = await cache.match(cacheKey)
     if (cached) {
       const data = await cached.json()
@@ -412,8 +441,6 @@ async function handleCachePurge(request, url, corsHeaders) {
   }
 
   // Always purge per-user reaction cache if token provided
-  const authHeader = request.headers.get('Authorization')
-  const userToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null
   let userDeleted = false
   if (userToken) {
     const tHash = await hashToken(userToken)
