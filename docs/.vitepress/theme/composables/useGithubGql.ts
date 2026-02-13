@@ -84,45 +84,9 @@ async function _fetchDiscussion(
   pagePath: string,
   categoryName: string,
 ): Promise<{ discussionId: string | null; comments: any[] } | null> {
-  const { token } = useAuth()
-
-  // Unauthenticated: use Worker proxy
-  if (!token.value) {
-    return fetchViaProxy(pagePath, categoryName)
-  }
-
-  // Authenticated: direct GraphQL
-  const catId = await getCategoryId(categoryName)
-  if (!catId) return null
-
-  const data = await gql(`query($owner: String!, $name: String!, $categoryId: ID) {
-    repository(owner: $owner, name: $name) {
-      discussions(first: 50, categoryId: $categoryId, orderBy: {field: CREATED_AT, direction: DESC}) {
-        nodes {
-          id
-          title
-          comments(first: 100) {
-            nodes {
-              id body createdAt author { login avatarUrl }
-              reactionGroups { content viewerHasReacted reactors { totalCount } }
-              replies(first: 50) {
-                nodes {
-                  id body createdAt author { login avatarUrl }
-                  reactionGroups { content viewerHasReacted reactors { totalCount } }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }`, { owner: REPO_OWNER, name: REPO_NAME, categoryId: catId })
-
-  const nodes = data?.repository?.discussions?.nodes
-  if (!nodes) return null
-  const match = nodes.find((n: any) => n.title === pagePath)
-  if (!match) return null
-  return { discussionId: match.id, comments: match.comments.nodes }
+  // Always use Worker proxy for reads — benefits from Cloudflare Cache (5 min TTL)
+  // shared across all users. Trade-off: viewerHasReacted is not available (defaults to false).
+  return fetchViaProxy(pagePath, categoryName)
 }
 
 /** Read-only proxy via Cloudflare Worker (for unauthenticated users) */
